@@ -4,22 +4,36 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { systemRestart, systemUpdate, systemVersion } from "./system";
 import type { Env } from "./types";
 
+const authMocks = vi.hoisted(() => ({
+  role: "admin" as "admin" | "user",
+}));
+
 vi.mock("./auth", () => ({
-  requireAdmin: vi.fn(async () => ({
+  requireAuth: vi.fn(async () => ({
     token: "session-token",
-    user: { id: "usr_admin", email: "admin@example.com", name: "Admin", role: "admin", banned: 0 },
+    user: { id: "usr_current", email: "current@example.com", name: "Current", role: authMocks.role, banned: 0 },
   })),
+  requireAdmin: vi.fn(async () => {
+    if (authMocks.role !== "admin") {
+      throw Object.assign(new Error("Administrator permission required"), { status: 403 });
+    }
+    return {
+      token: "session-token",
+      user: { id: "usr_admin", email: "admin@example.com", name: "Admin", role: "admin", banned: 0 },
+    };
+  }),
 }));
 
 describe("Cloudflare system update contract", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    authMocks.role = "admin";
   });
 
   it("returns deploy-only version capability", async () => {
-    mockLatestRelease("1.2.3");
+    const fetchMock = mockLatestRelease("1.2.3");
 
-    const response = await systemVersion(new Request("https://renewlet.example/api/app/admin/system/version", {
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
       headers: { "accept-language": "en-US" },
     }), envFixture());
 
@@ -46,6 +60,12 @@ describe("Cloudflare system update contract", () => {
       assets: [],
     });
     expect(body).not.toHaveProperty("runtime");
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://github.com/zhiyingzzhou/renewlet/releases.atom");
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("accept")).toBe("application/atom+xml");
+    expect(headers.get("authorization")).toBeNull();
+    expect(headers.get("x-github-api-version")).toBeNull();
   });
 
   it("treats deploy button builds without metadata as the package stable version", async () => {
@@ -55,7 +75,7 @@ describe("Cloudflare system update contract", () => {
     delete env.RENEWLET_VERSION;
     delete env.RENEWLET_COMMIT;
 
-    const response = await systemVersion(new Request("https://renewlet.example/api/app/admin/system/version", {
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
       headers: { "accept-language": "en-US" },
     }), env);
 
@@ -87,7 +107,7 @@ describe("Cloudflare system update contract", () => {
       RENEWLET_COMMIT: "504c1681822ac60f0caafdb0b1ba731853c9169d",
     });
 
-    const response = await systemVersion(new Request("https://renewlet.example/api/app/admin/system/version", {
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
       headers: { "accept-language": "en-US" },
     }), env);
 
@@ -116,7 +136,7 @@ describe("Cloudflare system update contract", () => {
       RENEWLET_COMMIT: "",
     });
 
-    const response = await systemVersion(new Request("https://renewlet.example/api/app/admin/system/version", {
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
       headers: { "accept-language": "en-US" },
     }), env);
 
@@ -144,7 +164,7 @@ describe("Cloudflare system update contract", () => {
       RENEWLET_COMMIT: "504c1681822ac60f0caafdb0b1ba731853c9169d",
     });
 
-    const response = await systemVersion(new Request("https://renewlet.example/api/app/admin/system/version", {
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
       headers: { "accept-language": "en-US" },
     }), env);
 
@@ -173,7 +193,7 @@ describe("Cloudflare system update contract", () => {
       RENEWLET_COMMIT: "d0059b51822ac60f0caafdb0b1ba731853c9169d",
     });
 
-    const response = await systemVersion(new Request("https://renewlet.example/api/app/admin/system/version", {
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
       headers: { "accept-language": "en-US" },
     }), env);
 
@@ -194,15 +214,36 @@ describe("Cloudflare system update contract", () => {
     });
   });
 
+  it("skips release candidates from the Atom feed when selecting the stable target", async () => {
+    mockReleaseFeed(["1.3.0-rc.1", "1.2.3"]);
+
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
+      headers: { "accept-language": "en-US" },
+    }), envFixture({ RENEWLET_VERSION: "1.2.2" }));
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      currentVersion: "1.2.2",
+      latestVersion: "1.2.3",
+      checkSucceeded: true,
+      hasUpdate: true,
+      releaseInfo: {
+        tagName: "v1.2.3",
+        version: "1.2.3",
+        htmlUrl: "https://github.com/zhiyingzzhou/renewlet/releases/tag/v1.2.3",
+      },
+    });
+  });
+
   it("keeps the dialog usable when GitHub release checks fail", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limited github-secret", { status: 403 })));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("release feed unavailable", { status: 403 })));
 
     const env = envFixture();
-    env.RENEWLET_GITHUB_TOKEN = "github-secret";
     delete env.RENEWLET_VERSION;
     delete env.RENEWLET_COMMIT;
 
-    const response = await systemVersion(new Request("https://renewlet.example/api/app/admin/system/version", {
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
       headers: { "accept-language": "en-US" },
     }), env);
 
@@ -222,10 +263,31 @@ describe("Cloudflare system update contract", () => {
         buildType: "cloudflare",
       },
       errorDetails: {
-        rawResponseText: "rate limited [redacted]",
+        rawResponseText: "release feed unavailable",
       },
     });
-    expect(JSON.stringify(body)).not.toContain("github-secret");
+    expect(JSON.stringify(body).toLowerCase()).not.toContain("authorization");
+  });
+
+  it("lets non-admin users read versions without raw upstream details", async () => {
+    authMocks.role = "user";
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("release feed unavailable", { status: 403 })));
+
+    const response = await systemVersion(new Request("https://renewlet.example/api/app/system/version", {
+      headers: { "accept-language": "en-US" },
+    }), envFixture());
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      deployment: "cloudflare",
+      updateMode: "cloudflare-deploy",
+      updateSupported: false,
+      checkSucceeded: false,
+      hasUpdate: false,
+      warning: "GitHub Releases cannot be fetched right now. Try again later.",
+    });
+    expect(body).not.toHaveProperty("errorDetails");
   });
 
   it("rejects executable updates in the Worker runtime", async () => {
@@ -247,11 +309,23 @@ describe("Cloudflare system update contract", () => {
       code: "SYSTEM_RESTART_UNSUPPORTED",
     });
   });
+
+  it("keeps executable system actions admin-only", async () => {
+    authMocks.role = "user";
+
+    await expect(systemUpdate(new Request("https://renewlet.example/api/app/admin/system/update", {
+      method: "POST",
+    }), envFixture())).rejects.toMatchObject({ status: 403 });
+    await expect(systemRestart(new Request("https://renewlet.example/api/app/admin/system/restart", {
+      method: "POST",
+    }), envFixture())).rejects.toMatchObject({ status: 403 });
+  });
 });
 
 function envFixture(overrides: Partial<Env> = {}): Env {
   return {
     DB: {} as D1Database,
+    ASSETS: {} as Fetcher,
     ASSETS_BUCKET: {} as R2Bucket,
     RENEWLET_VERSION: "1.2.3",
     RENEWLET_COMMIT: "504c1681822ac60f0caafdb0b1ba731853c9169d",
@@ -261,14 +335,38 @@ function envFixture(overrides: Partial<Env> = {}): Env {
 }
 
 function mockLatestRelease(version: string) {
-  vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-    tag_name: `v${version}`,
-    name: `Renewlet ${version}`,
-    body: "",
-    published_at: "2026-06-02T00:00:00Z",
-    html_url: `https://github.com/zhiyingzzhou/renewlet/releases/tag/v${version}`,
-    prerelease: false,
-    draft: false,
-    assets: [],
-  })));
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    new Response(releaseAtomFixture([version]), {
+      headers: { "content-type": "application/atom+xml" },
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function mockReleaseFeed(versions: string[]) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(releaseAtomFixture(versions), {
+        headers: { "content-type": "application/atom+xml" },
+      }),
+    ),
+  );
+}
+
+function releaseAtomFixture(versions: string[]): string {
+  const entries = versions.map((version) => {
+    const tag = version.startsWith("v") ? version : `v${version}`;
+    return `  <entry>
+    <updated>2026-06-02T00:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/zhiyingzzhou/renewlet/releases/tag/${tag}"/>
+    <title>${tag}</title>
+    <content type="html">&lt;p&gt;Release notes&lt;/p&gt;</content>
+  </entry>`;
+  }).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+${entries}
+</feed>`;
 }

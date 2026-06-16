@@ -84,6 +84,10 @@ const mocks = vi.hoisted(() => ({
   appStatus: { setupRequired: false, setupEnabled: true, demoMode: false, isLoading: false },
 }));
 
+function checkedIconProviders(): BuiltInIconProvider[] {
+  return mocks.checkBuiltInIconIndexProviderMutateAsync.mock.calls.map((call) => call[0] as BuiltInIconProvider);
+}
+
 vi.mock("@/hooks/use-toast", () => ({
   useToast: () => ({
     toast: mocks.toast,
@@ -415,6 +419,103 @@ describe("useSettingsFormController integrations", () => {
     expect(mocks.checkBuiltInIconIndexProviderMutateAsync).toHaveBeenCalledWith("selfhst");
     expect(result.current.hasUnsavedChanges).toBe(false);
     expect(mocks.updateSettingsMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("checks all built-in icon providers from the sources dialog without marking settings dirty", async () => {
+    const { result } = renderHook(() => useSettingsFormController());
+
+    await act(async () => {
+      await result.current.builtInIconIndex.checkAllProviders();
+    });
+
+    expect(checkedIconProviders()).toEqual([
+      "thesvg",
+      "selfhst",
+      "dashboardIcons",
+    ]);
+    expect(result.current.hasUnsavedChanges).toBe(false);
+    expect(mocks.updateSettingsMutateAsync).not.toHaveBeenCalled();
+  });
+
+  it("deduplicates dialog-level provider checks while keeping manual retry available", async () => {
+    const { result } = renderHook(() => useSettingsFormController());
+    let releaseFirstBatch: (() => void) | null = null;
+    mocks.checkBuiltInIconIndexProviderMutateAsync.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      releaseFirstBatch = resolve;
+    }));
+
+    let firstBatch!: Promise<void>;
+    let secondBatch!: Promise<void>;
+    act(() => {
+      firstBatch = result.current.builtInIconIndex.checkAllProviders();
+      secondBatch = result.current.builtInIconIndex.checkAllProviders();
+    });
+
+    expect(mocks.checkBuiltInIconIndexProviderMutateAsync).toHaveBeenCalledTimes(1);
+    expect(mocks.checkBuiltInIconIndexProviderMutateAsync).toHaveBeenLastCalledWith("thesvg");
+
+    await act(async () => {
+      releaseFirstBatch?.();
+      await firstBatch;
+      await secondBatch;
+    });
+
+    expect(checkedIconProviders()).toEqual([
+      "thesvg",
+      "selfhst",
+      "dashboardIcons",
+    ]);
+
+    await act(async () => {
+      await result.current.builtInIconIndex.checkProvider("dashboardIcons");
+    });
+
+    expect(mocks.checkBuiltInIconIndexProviderMutateAsync).toHaveBeenCalledTimes(4);
+    expect(mocks.checkBuiltInIconIndexProviderMutateAsync).toHaveBeenLastCalledWith("dashboardIcons");
+    expect(result.current.hasUnsavedChanges).toBe(false);
+  });
+
+  it("skips dialog-level provider checks for non-admin, pending, or refreshing providers", async () => {
+    mocks.accountIdentity = { email: "alice@example.com", role: "user", banned: false };
+    const { result: userResult } = renderHook(() => useSettingsFormController());
+
+    await act(async () => {
+      await userResult.current.builtInIconIndex.checkAllProviders();
+    });
+
+    expect(mocks.checkBuiltInIconIndexProviderMutateAsync).not.toHaveBeenCalled();
+
+    mocks.accountIdentity = { email: "alice@example.com", role: "admin", banned: false };
+    mocks.checkBuiltInIconIndexProviderIsPending = true;
+    const { result: pendingResult } = renderHook(() => useSettingsFormController());
+
+    await act(async () => {
+      await pendingResult.current.builtInIconIndex.checkAllProviders();
+    });
+
+    expect(mocks.checkBuiltInIconIndexProviderMutateAsync).not.toHaveBeenCalled();
+
+    mocks.checkBuiltInIconIndexProviderIsPending = false;
+    mocks.builtInIconIndexStatus = {
+      ...mocks.builtInIconIndexStatus,
+      data: {
+        ...mocks.builtInIconIndexStatus.data,
+        providers: providerStatusFixtures({ thesvg: 40, selfhst: 30, dashboardIcons: 30 }).map((providerStatus) => (
+          providerStatus.provider === "dashboardIcons" ? { ...providerStatus, refreshing: true } : providerStatus
+        )),
+      },
+    };
+    const { result: refreshingResult } = renderHook(() => useSettingsFormController());
+
+    await act(async () => {
+      await refreshingResult.current.builtInIconIndex.checkAllProviders();
+    });
+
+    expect(checkedIconProviders()).toEqual([
+      "thesvg",
+      "selfhst",
+    ]);
+    expect(refreshingResult.current.hasUnsavedChanges).toBe(false);
   });
 
   it("shows a destructive toast when the built-in icon index refresh fails", async () => {

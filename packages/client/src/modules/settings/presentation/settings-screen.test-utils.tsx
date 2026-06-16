@@ -331,8 +331,11 @@ export function createControllerState(overrides: {
     canManage?: boolean;
     status?: BuiltInIconIndexStatus;
     isLoading?: boolean;
-    checkingProvider?: BuiltInIconProvider | null;
+    checkingProviders?: BuiltInIconProvider[];
     refreshingProvider?: BuiltInIconProvider | null;
+    checkAllProviders?: () => Promise<void>;
+    checkProvider?: (provider: BuiltInIconProvider) => Promise<void>;
+    refreshProvider?: (provider: BuiltInIconProvider) => Promise<void>;
   };
   publicStatusPage?: {
     enabled?: boolean;
@@ -345,6 +348,9 @@ export function createControllerState(overrides: {
   externalIntegrationsDisabled?: boolean;
 } = {}) {
   const fn = vi.fn();
+  const checkAllProviders = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  const checkProvider = vi.fn<(provider: BuiltInIconProvider) => Promise<void>>().mockResolvedValue(undefined);
+  const refreshProvider = vi.fn<(provider: BuiltInIconProvider) => Promise<void>>().mockResolvedValue(undefined);
   const currencySymbols: Record<string, string> = {
     CNY: "¥",
     EUR: "€",
@@ -445,11 +451,14 @@ export function createControllerState(overrides: {
         })),
       },
       isLoading: overrides.builtInIconIndex?.isLoading ?? false,
-      checkingProvider: overrides.builtInIconIndex?.checkingProvider ?? null,
+      checkingProviders: overrides.builtInIconIndex?.checkingProviders ?? [],
       refreshingProvider: overrides.builtInIconIndex?.refreshingProvider ?? null,
-      checkAllProviders: fn,
-      checkProvider: fn,
-      refreshProvider: fn,
+      errorDetails: null,
+      errorDetailsOpen: false,
+      setErrorDetailsOpen: fn,
+      checkAllProviders: overrides.builtInIconIndex?.checkAllProviders ?? checkAllProviders,
+      checkProvider: overrides.builtInIconIndex?.checkProvider ?? checkProvider,
+      refreshProvider: overrides.builtInIconIndex?.refreshProvider ?? refreshProvider,
     },
     publicStatusPage: {
       enabled: overrides.publicStatusPage?.enabled ?? false,

@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useBuiltInIconIndexStatus, useCheckBuiltInIconIndexProvider, useRefreshBuiltInIconIndexProvider } from "@/hooks/use-built-in-icon-index";
 import { useToast } from "@/hooks/use-toast";
 import { getDisplayErrorMessage } from "@/lib/display-error";
@@ -11,7 +11,7 @@ export interface SettingsBuiltInIconIndexController {
   canManage: boolean;
   status: BuiltInIconIndexStatus | undefined;
   isLoading: boolean;
-  checkingProvider: BuiltInIconProvider | null;
+  checkingProviders: BuiltInIconProvider[];
   refreshingProvider: BuiltInIconProvider | null;
   errorDetails: RawErrorResponseDetails | null;
   errorDetailsOpen: boolean;
@@ -21,28 +21,32 @@ export interface SettingsBuiltInIconIndexController {
   refreshProvider: (provider: BuiltInIconProvider) => Promise<void>;
 }
 
+// 内置图标索引是管理员级全局状态，不能和 settings 表单草稿混在一起，否则会制造未保存提示和普通用户可见状态。
 export function useSettingsBuiltInIconIndexController(canManage: boolean): SettingsBuiltInIconIndexController {
   const { t } = useI18n();
   const { toast } = useToast();
   const status = useBuiltInIconIndexStatus(canManage);
   const checkProvider = useCheckBuiltInIconIndexProvider();
   const refreshProvider = useRefreshBuiltInIconIndexProvider();
-  const [checkingProvider, setCheckingProvider] = useState<BuiltInIconProvider | null>(null);
+  const [checkingProviders, setCheckingProviders] = useState<BuiltInIconProvider[]>([]);
   const [refreshingProvider, setRefreshingProvider] = useState<BuiltInIconProvider | null>(null);
   const [errorDetails, setErrorDetails] = useState<RawErrorResponseDetails | null>(null);
   const [errorDetailsOpen, setErrorDetailsOpen] = useState(false);
+  const batchCheckInFlightRef = useRef(false);
+  const providerStatuses = status.data?.providers;
 
   const runProviderCheck = useCallback(async (provider: BuiltInIconProvider) => {
-    setCheckingProvider(provider);
+    setCheckingProviders((current) => current.includes(provider) ? current : [...current, provider]);
     try {
       await checkProvider.mutateAsync(provider);
     } catch (error) {
+      // check 失败仍 refetch 后端状态，因为 GitHub 限流/上游错误会被记录为 provider 级摘要。
       const details = createRawErrorResponseDetails(error);
       setErrorDetails(details);
       setErrorDetailsOpen(true);
       await status.refetch();
     } finally {
-      setCheckingProvider((current) => current === provider ? null : current);
+      setCheckingProviders((current) => current.filter((item) => item !== provider));
     }
   }, [checkProvider, status]);
 
@@ -52,17 +56,29 @@ export function useSettingsBuiltInIconIndexController(canManage: boolean): Setti
   }, [canManage, checkProvider.isPending, runProviderCheck]);
 
   const handleCheckAllProviders = useCallback(async () => {
-    if (!canManage || checkProvider.isPending) return;
-    for (const provider of BUILT_IN_ICON_PROVIDERS) {
-      await runProviderCheck(provider);
+    if (!canManage || checkProvider.isPending || batchCheckInFlightRef.current) return;
+    batchCheckInFlightRef.current = true;
+    const providers = BUILT_IN_ICON_PROVIDERS.filter((provider) => {
+      const providerStatus = providerStatuses?.find((item) => item.provider === provider);
+      return refreshingProvider !== provider && !providerStatus?.refreshing;
+    });
+    setCheckingProviders((current) => Array.from(new Set([...current, ...providers])));
+    try {
+      // 弹层级检查要串行访问 GitHub feed；并发会放大共享出口 403/429，还会让 badge 状态乱跳。
+      for (const provider of providers) {
+        await runProviderCheck(provider);
+      }
+    } finally {
+      batchCheckInFlightRef.current = false;
     }
-  }, [canManage, checkProvider.isPending, runProviderCheck]);
+  }, [canManage, checkProvider.isPending, providerStatuses, refreshingProvider, runProviderCheck]);
 
   const handleRefreshProvider = useCallback(async (provider: BuiltInIconProvider) => {
     if (!canManage || refreshProvider.isPending) return;
     setRefreshingProvider(provider);
     try {
       const response = await refreshProvider.mutateAsync(provider);
+      // 刷新成功只替换对应 provider 的聚合索引，用户已保存的 Logo URL 不会被批量改写。
       toast({
         title: t("settings.builtInIconIndexRefreshSuccess"),
         description: t("settings.builtInIconIndexRefreshSuccessDescription", {
@@ -91,7 +107,7 @@ export function useSettingsBuiltInIconIndexController(canManage: boolean): Setti
     canManage,
     status: status.data,
     isLoading: status.isLoading,
-    checkingProvider,
+    checkingProviders,
     refreshingProvider,
     errorDetails,
     errorDetailsOpen,
