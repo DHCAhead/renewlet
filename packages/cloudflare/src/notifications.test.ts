@@ -29,17 +29,23 @@ type FakeD1Query = {
   method: "all" | "first" | "run";
 };
 
+type FakeSchedulerState = {
+  autoRenewCount?: number;
+  repeatReminderCount?: number;
+  lastAutoRenewLocalDate?: string;
+};
+
 // 这个 D1 mock 保留 prepare/bind/all/first/run 形状，让用例能验证 SQL 阶段和参数边界，而不是只测纯函数。
-function fakeEnv(handler: (query: FakeD1Query) => unknown | Promise<unknown>): Env {
+function fakeEnv(handler: (query: FakeD1Query) => unknown | Promise<unknown>, options: { schedulerState?: FakeSchedulerState } = {}): Env {
   return {
     DB: {
       prepare(sql: string) {
         return {
           bind(...params: unknown[]) {
             return {
-              all: async () => await handler({ sql, params, method: "all" }),
-              first: async () => await handler({ sql, params, method: "first" }),
-              run: async () => await handler({ sql, params, method: "run" }),
+              all: async () => await handleFakeD1({ sql, params, method: "all" }, handler, options.schedulerState),
+              first: async () => await handleFakeD1({ sql, params, method: "first" }, handler, options.schedulerState),
+              run: async () => await handleFakeD1({ sql, params, method: "run" }, handler, options.schedulerState),
             } as D1PreparedStatement;
           },
         } as D1PreparedStatement;
@@ -48,6 +54,27 @@ function fakeEnv(handler: (query: FakeD1Query) => unknown | Promise<unknown>): E
     ASSETS: {} as Fetcher,
     ASSETS_BUCKET: {} as R2Bucket,
   };
+}
+
+async function handleFakeD1(
+  query: FakeD1Query,
+  handler: (query: FakeD1Query) => unknown | Promise<unknown>,
+  state: FakeSchedulerState | undefined,
+): Promise<unknown> {
+  if (query.method === "first" && query.sql.includes("FROM subscription_scheduler_state")) {
+    return {
+      user_id: String(query.params[0] ?? "usr_due"),
+      auto_renew_count: state?.autoRenewCount ?? 1,
+      repeat_reminder_count: state?.repeatReminderCount ?? 1,
+      last_auto_renew_local_date: state?.lastAutoRenewLocalDate ?? "",
+      created_at: "2026-01-01T00:00:00.000Z",
+      updated_at: "2026-01-01T00:00:00.000Z",
+    };
+  }
+  if (query.method === "run" && query.sql.includes("subscription_scheduler_state")) {
+    return d1Run(1);
+  }
+  return await handler(query);
 }
 
 function d1All<T>(results: T[]): D1Result<T> {
@@ -410,6 +437,7 @@ describe("Cloudflare notifications", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-09T08:00:00.000Z"));
     const events: string[] = [];
+    let renewalSelectSql = "";
     let renewalUpdateParams: unknown[] | null = null;
     let finalizeParams: unknown[] | null = null;
     const env = fakeEnv(({ sql, params, method }) => {
@@ -423,6 +451,7 @@ describe("Cloudflare notifications", () => {
         return d1Run(1);
       }
       if (method === "all" && sql.includes("auto_renew = 1")) {
+        renewalSelectSql = sql;
         events.push("renewal-maintenance");
         return d1All([subscriptionRow({
           start_date: "2026-01-08",
@@ -458,6 +487,7 @@ describe("Cloudflare notifications", () => {
     await expect(runScheduledNotifications(env)).resolves.toBeUndefined();
 
     expect(events).toEqual(["renewal-maintenance", "notification-content"]);
+    expect(renewalSelectSql).toContain("billing_cycle IN");
     expect(renewalUpdateParams?.[0]).toBe("2026-02-08");
     expect(finalizeParams?.[0]).toBe("skipped");
   });
