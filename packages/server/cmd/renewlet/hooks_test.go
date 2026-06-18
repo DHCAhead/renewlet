@@ -319,6 +319,72 @@ func TestNormalizeSubscriptionRecordDefaultsAndValidatesContract(t *testing.T) {
 	}
 }
 
+func TestNormalizeSubscriptionRecordValidatesCostSharing(t *testing.T) {
+	collection := core.NewBaseCollection("subscriptions")
+	base := func(price float64, costSharing string) *core.Record {
+		record := core.NewRecord(collection)
+		record.Set("name", "Family Plan")
+		record.Set("price", price)
+		record.Set("currency", "USD")
+		record.Set("billingCycle", "monthly")
+		record.Set("customDays", 0)
+		record.Set("startDate", "2026-05-14")
+		record.Set("nextBillingDate", "2026-06-14")
+		record.Set("tags", []string{})
+		record.Set("reminderDays", 3)
+		record.Set("costSharing", types.JSONRaw(costSharing))
+		return record
+	}
+
+	valid := base(100, `{
+		"enabled": true,
+		"splitMode": "custom",
+		"members": [
+			{"id": "partner", "name": "Partner", "currency": "USD", "customAmount": 40},
+			{"id": "child", "name": "Child", "currency": "USD", "customAmount": 60}
+		]
+	}`)
+	if err := normalizeSubscriptionRecord(valid); err != nil {
+		t.Fatalf("expected valid cost sharing to be accepted: %v", err)
+	}
+	data, err := jsonBytesFromValue(valid.Get("costSharing"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload costSharingPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SplitMode != "custom" || len(payload.Members) != 2 || payload.Members[0].CustomAmount == nil || *payload.Members[0].CustomAmount != 40 {
+		t.Fatalf("unexpected normalized cost sharing payload: %#v", payload)
+	}
+
+	flexibleTotal := base(100, `{
+		"enabled": true,
+		"splitMode": "custom",
+		"members": [
+			{"id": "partner", "name": "Partner", "currency": "USD", "customAmount": 40},
+			{"id": "child", "name": "Child", "currency": "USD", "customAmount": 50}
+		]
+	}`)
+	if err := normalizeSubscriptionRecord(flexibleTotal); err != nil {
+		t.Fatalf("expected flexible custom total to be accepted: %v", err)
+	}
+
+	legacyIdentityFields := base(100, `{
+		"enabled": true,
+		"payerMemberId": "me",
+		"selfMemberId": "me",
+		"splitMode": "custom",
+		"members": [
+			{"id": "partner", "name": "Partner", "currency": "USD", "included": true, "customAmount": 40}
+		]
+	}`)
+	if err := normalizeSubscriptionRecord(legacyIdentityFields); err == nil || !strings.Contains(err.Error(), "COST_SHARING_JSON_INVALID") {
+		t.Fatalf("expected legacy cost sharing identity fields to fail, got %v", err)
+	}
+}
+
 func TestNormalizeSubscriptionRecordValidatesDateOrder(t *testing.T) {
 	collection := core.NewBaseCollection("subscriptions")
 	base := func(startDate, nextBillingDate string) *core.Record {

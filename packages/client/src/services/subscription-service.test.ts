@@ -1,6 +1,6 @@
 // 订阅 service 测试保护 PocketBase/Worker 响应进入前端 domain 前的运行时归一化边界。
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fromApiSubscription, subscriptionService } from "./subscription-service";
+import { fromApiSubscription, subscriptionService, toSubscriptionWritePayload } from "./subscription-service";
 
 const mocks = vi.hoisted(() => ({
   apiFetch: vi.fn(),
@@ -124,6 +124,25 @@ describe("subscription service normalization", () => {
       customDays: 3,
       customCycleUnit: "year",
     });
+  });
+
+  it("passes the current-user-payer cost sharing shape through the service boundary", () => {
+    const subscription = fromApiSubscription({
+      ...apiSubscription,
+      price: 100,
+      costSharing: {
+        enabled: true,
+        splitMode: "custom",
+        members: [
+          { id: "partner", name: "Partner", customAmount: 40 },
+          { id: "child", name: "Child", customAmount: 60 },
+        ],
+      },
+    });
+    const payload = toSubscriptionWritePayload(subscription);
+
+    expect(payload.costSharing).toEqual(subscription.costSharing);
+    expect(toSubscriptionWritePayload(fromApiSubscription(apiSubscription)).costSharing).toBeNull();
   });
 });
 

@@ -47,6 +47,7 @@ type SubscriptionBaseForService = Pick<
   | "repeatReminderEnabled"
   | "repeatReminderInterval"
   | "repeatReminderWindow"
+  | "costSharing"
   | "extra"
 >;
 type LegacySubscriptionRecord = Record<string, unknown> & { id: string };
@@ -123,6 +124,9 @@ function normalizeSubscriptionRecord(row: unknown): unknown {
     }
   }
   if (Array.isArray(row["tags"])) normalized["tags"] = row["tags"];
+  if (isRecord(row["costSharing"]) && Object.keys(row["costSharing"]).length > 0) {
+    normalized["costSharing"] = row["costSharing"];
+  }
 
   for (const key of ["logo", "paymentMethod", "trialEndDate", "website", "notes"] as const) {
     const value = optionalNonEmptyString(row[key]);
@@ -171,6 +175,7 @@ export function fromApiSubscription(row: ApiSubscription | LegacySubscriptionRec
     repeatReminderEnabled: parsedRow.repeatReminderEnabled,
     repeatReminderInterval: parsedRow.repeatReminderInterval,
     repeatReminderWindow: parsedRow.repeatReminderWindow,
+    costSharing: parsedRow.costSharing,
     extra: parsedRow.extra,
   } satisfies SubscriptionBaseForService;
   if (parsedRow.billingCycle === "custom") {
@@ -239,6 +244,7 @@ export function toSubscriptionWritePayload(sub: SubscriptionDraft | Subscription
     repeatReminderEnabled: sub.repeatReminderEnabled,
     repeatReminderInterval: sub.repeatReminderInterval,
     repeatReminderWindow: sub.repeatReminderWindow,
+    costSharing: sub.costSharing ?? null,
     // extra 是导入/seed 的幂等通道；编辑普通字段时必须随记录保留，避免重复导入失效。
     extra: sub.extra ?? {},
   };

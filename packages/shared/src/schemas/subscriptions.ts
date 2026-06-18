@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { COST_SHARING_SPLIT_MODES, costSharingCustomAmountsAreValid } from "../cost-sharing";
 import {
   BILLING_CYCLES,
   CUSTOM_CYCLE_UNITS,
@@ -71,6 +72,29 @@ const optionalLogoReferenceSchema = logoReferenceSchema.nullable().optional();
 
 const tagsSchema = z.array(z.string().trim().min(1).max(40)).max(100).optional();
 const extraSchema = z.record(z.string(), z.unknown()).optional();
+// costSharing 是“当前用户默认付款、成员只代表其他人”的 shared wire shape；旧身份字段必须在迁移层清理，写入层拒绝。
+const costSharingMemberSchema = z.object({
+  id: z.string().trim().min(1).max(80),
+  name: z.string().trim().min(1).max(80),
+  note: z.string().trim().max(500).optional(),
+  currency: z.string().trim().regex(/^[A-Z]{3}$/).optional(),
+  customAmount: z.number().finite().nonnegative().max(1_000_000_000).optional(),
+}).strict();
+export const costSharingSchema = z.object({
+  enabled: z.boolean(),
+  splitMode: z.enum(COST_SHARING_SPLIT_MODES),
+  members: z.array(costSharingMemberSchema).min(1).max(20),
+}).strict().refine((value) => {
+  if (!value.enabled) return true;
+  const ids = new Set(value.members.map((member) => member.id));
+  return ids.size === value.members.length;
+}, {
+  path: ["members"],
+  message: "Invalid cost sharing members",
+}).refine((value) => !value.enabled || costSharingCustomAmountsAreValid(value), {
+  path: ["members"],
+  message: "Invalid custom cost sharing amounts",
+});
 export const reminderDaysSchema = z
   .number()
   .int()
@@ -127,14 +151,17 @@ const subscriptionWriteBodyShape = {
   repeatReminderEnabled: z.boolean(),
   repeatReminderInterval: z.enum(REPEAT_REMINDER_INTERVALS),
   repeatReminderWindow: z.enum(REPEAT_REMINDER_WINDOWS),
+  costSharing: costSharingSchema.nullable().optional(),
   // extra 是跨运行面的非展示元数据通道；seed/import 依赖它做幂等，不参与订阅 UI。
   extra: extraSchema,
 } satisfies z.ZodRawShape;
 
-export const subscriptionCreateBodySchema = z.object(subscriptionWriteBodyShape).strict().refine(oneTimeTermFieldsAreConsistent, {
-  path: ["oneTimeTermCount"],
-  message: "Invalid one-time term",
-});
+export const subscriptionCreateBodySchema = z.object(subscriptionWriteBodyShape)
+  .strict()
+  .refine(oneTimeTermFieldsAreConsistent, {
+    path: ["oneTimeTermCount"],
+    message: "Invalid one-time term",
+  });
 
 export const subscriptionUpdateBodySchema = z.object(subscriptionWriteBodyShape)
   .strict()
@@ -186,6 +213,7 @@ export const apiSubscriptionSchema = z.object({
   repeatReminderEnabled: z.boolean(),
   repeatReminderInterval: z.enum(REPEAT_REMINDER_INTERVALS),
   repeatReminderWindow: z.enum(REPEAT_REMINDER_WINDOWS),
+  costSharing: costSharingSchema.optional(),
   extra: extraSchema,
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),

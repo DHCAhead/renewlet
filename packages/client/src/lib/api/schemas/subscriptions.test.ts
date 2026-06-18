@@ -138,6 +138,90 @@ describe("subscription API schemas", () => {
     }
   });
 
+  it("accepts equal and custom cost sharing payloads", () => {
+    const equalSharing = {
+      enabled: true,
+      splitMode: "equal",
+      members: [
+        { id: "partner", name: "Partner", note: "Transfers monthly", currency: "AUD" },
+        { id: "child", name: "Child", note: "Transfers quarterly", currency: "CNY" },
+      ],
+    };
+    const customSharing = {
+      ...equalSharing,
+      splitMode: "custom",
+      members: [
+        { id: "partner", name: "Partner", customAmount: 0.33 },
+        { id: "child", name: "Child", customAmount: 0.5 },
+      ],
+    };
+
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: equalSharing,
+    }).success).toBe(true);
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: customSharing,
+    }).success).toBe(true);
+    expect(apiSubscriptionSchema.safeParse({
+      ...validSubscriptionResponseBody,
+      costSharing: equalSharing,
+    }).success).toBe(true);
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: {
+        ...equalSharing,
+        members: [{ id: "partner", name: "Partner", currency: "invalid" }],
+      },
+    }).success).toBe(false);
+  });
+
+  it("rejects invalid cost sharing members and custom amount shapes", () => {
+    const baseSharing = {
+      enabled: true,
+      splitMode: "equal",
+      members: [
+        { id: "partner", name: "Partner" },
+        { id: "child", name: "Child" },
+      ],
+    };
+
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: { ...baseSharing, payerMemberId: "partner" },
+    }).success).toBe(false);
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: {
+        ...baseSharing,
+        members: [{ id: "partner", name: "Partner" }, { id: "partner", name: "Duplicate" }],
+      },
+    }).success).toBe(false);
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: {
+        ...baseSharing,
+        splitMode: "custom",
+        members: [
+          { id: "partner", name: "Partner" },
+          { id: "child", name: "Child", customAmount: 0.1 },
+        ],
+      },
+    }).success).toBe(false);
+    expect(subscriptionCreateBodySchema.safeParse({
+      ...validSubscriptionCreateBody,
+      costSharing: {
+        ...baseSharing,
+        splitMode: "custom",
+        members: [
+          { id: "partner", name: "Partner", customAmount: 0.1 },
+          { id: "child", name: "Child", customAmount: 0.1 },
+        ],
+      },
+    }).success).toBe(true);
+  });
+
   it("accepts expired as a first-class subscription status", () => {
     expect(subscriptionCreateBodySchema.safeParse({
       ...validSubscriptionCreateBody,

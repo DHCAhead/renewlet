@@ -55,6 +55,7 @@ import { SubscriptionLogo } from '@/components/subscription-logo';
 import { SubscriptionStatusBadge } from '@/components/subscription-status-badge';
 import { formatBillingCycleLabel, isOneTimeBuyout, isOneTimeFixedTerm } from '@/lib/subscription-billing';
 import { isManualRenewEligible } from '@renewlet/shared/subscription-renewal';
+import { calculateCostSharingSummary, type CostSharingCurrencyConverter } from '@renewlet/shared/cost-sharing';
 
 export type SubscriptionCardLookup = ReadonlyMap<string, ConfigItem>;
 
@@ -83,6 +84,8 @@ interface SubscriptionCardProps {
   paymentMethodByValue: SubscriptionCardLookup;
   /** 订阅选择“继承”时展示的全局提醒天数。 */
   inheritedReminderDays?: number | undefined;
+  /** 分账摘要使用订阅原币种展示；跨币种成员金额由页面级汇率源统一换算。 */
+  costSharingCurrencyConvert?: CostSharingCurrencyConverter | undefined;
 }
 
 const DEFAULT_BADGE_COLOR = "hsl(var(--primary))";
@@ -133,6 +136,7 @@ export function SubscriptionCard({
   categoryByValue,
   paymentMethodByValue,
   inheritedReminderDays = DEFAULT_NOTIFICATION_REMINDER_DAYS,
+  costSharingCurrencyConvert,
 }: SubscriptionCardProps) {
   const { t, locale, label, formatCurrency, formatDateOnly } = useI18n();
   const categoryConfig = categoryByValue.get(subscription.category);
@@ -155,6 +159,10 @@ export function SubscriptionCard({
   const hasCalendarEvent = !isBuyout;
   const canManualRenew = Boolean(onRenew) && isManualRenewEligible(subscription);
   const billingCycleLabel = formatBillingCycleLabel(subscription, locale);
+  const costSharingSummary = calculateCostSharingSummary(subscription.costSharing, subscription.price, {
+    baseCurrency: subscription.currency,
+    convert: costSharingCurrencyConvert,
+  });
   const renewalBadgeLabel = isOneTime
     ? localizedLabel(CYCLE_LABELS["one-time"], locale)
     : subscription.autoRenew
@@ -224,6 +232,14 @@ export function SubscriptionCard({
           text: paymentMethodLabel,
           tone: "muted" as const,
           truncate: true,
+        }]
+      : []),
+    ...(costSharingSummary.enabled
+      ? [{
+          key: "cost-sharing",
+          icon: <CreditCard className="h-3.5 w-3.5 shrink-0" />,
+          text: t("subscription.costSharing.yourShare") + " " + formatCurrency(costSharingSummary.yourShare, subscription.currency),
+          tone: "muted" as const,
         }]
       : []),
     ...(relativeBillingText

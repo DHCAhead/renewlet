@@ -14,12 +14,14 @@ import type { DateOnly } from "@/lib/time/date-only";
 import { formatBillingCycleLabel } from "@/lib/subscription-billing";
 import { DISABLED_REMINDER_DAYS, INHERIT_REMINDER_DAYS, type Subscription } from "@/types/subscription";
 import { getEffectiveSubscriptionStatus } from "./subscription-status";
+import { calculateCostSharingSummary, type CostSharingCalculationOptions } from "@renewlet/shared/cost-sharing";
 
 interface SubscriptionExportLabelMaps {
   categoryLabelByValue: ReadonlyMap<string, string>;
   statusLabelByValue: ReadonlyMap<string, string>;
   locale: Locale;
   today: DateOnly | string;
+  costSharingCalculation?: CostSharingCalculationOptions | undefined;
 }
 
 /** CSV 单元格转义，并防护常见表格公式注入前缀。 */
@@ -45,6 +47,8 @@ export function buildSubscriptionsCsv(
     translate(labelMaps.locale, "subscriptions.csv.startDate"),
     translate(labelMaps.locale, "subscriptions.csv.nextBillingDate"),
     translate(labelMaps.locale, "subscriptions.csv.reminderDays"),
+    translate(labelMaps.locale, "subscription.costSharing.yourShare"),
+    translate(labelMaps.locale, "subscription.costSharing.memberTotal"),
     translate(labelMaps.locale, "subscriptions.csv.tags"),
   ];
   const rows = subscriptions.map((subscription) => {
@@ -55,6 +59,10 @@ export function buildSubscriptionsCsv(
       : subscription.reminderDays === INHERIT_REMINDER_DAYS
         ? translate(labelMaps.locale, "subscription.reminderInheritCsv")
         : subscription.reminderDays;
+    const costSharingSummary = calculateCostSharingSummary(subscription.costSharing, subscription.price, {
+      ...labelMaps.costSharingCalculation,
+      baseCurrency: subscription.currency,
+    });
     return [
       subscription.name,
       subscription.price,
@@ -65,6 +73,8 @@ export function buildSubscriptionsCsv(
       subscription.startDate,
       subscription.nextBillingDate,
       reminderDays,
+      costSharingSummary.enabled ? costSharingSummary.yourShare : "",
+      costSharingSummary.enabled ? costSharingSummary.memberTotal : "",
       subscription.tags?.join(";") || "",
     ];
   });

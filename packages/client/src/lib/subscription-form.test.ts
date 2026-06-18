@@ -287,4 +287,46 @@ describe("subscription-form", () => {
       repeatReminderWindow: "full",
     });
   });
+
+  it("keeps valid custom cost sharing drafts with member currencies", () => {
+    const form = createSubscriptionFormState({
+      name: "Family Plan",
+      price: "100",
+      currency: "USD",
+      startDate: assertDateOnly("2026-01-01"),
+      nextBillingDate: assertDateOnly("2026-02-01"),
+      costSharing: {
+        enabled: true,
+        splitMode: "custom",
+        members: [
+          { id: "partner", name: "Partner", currency: "USD", customAmount: 40 },
+          { id: "child", name: "Child", currency: "CNY", customAmount: 420 },
+        ],
+      },
+    });
+
+    expect(getSubscriptionDraftValidationError(form)).toBeNull();
+    expect(toSubscriptionDraft(form)?.costSharing).toEqual(form.costSharing);
+  });
+
+  it("allows custom cost sharing totals to differ from the subscription price", () => {
+    const form = createSubscriptionFormState({
+      name: "Broken Family Plan",
+      price: "100",
+      currency: "USD",
+      startDate: assertDateOnly("2026-01-01"),
+      nextBillingDate: assertDateOnly("2026-02-01"),
+      costSharing: {
+        enabled: true,
+        splitMode: "custom",
+        members: [
+          { id: "partner", name: "Partner", currency: "USD", customAmount: 40 },
+          { id: "child", name: "Child", currency: "USD", customAmount: 50 },
+        ],
+      },
+    });
+
+    expect(getSubscriptionDraftValidationError(form)).toBeNull();
+    expect(toSubscriptionDraft(form)?.costSharing).toEqual(form.costSharing);
+  });
 });
