@@ -140,6 +140,16 @@ export interface TelegramBotBindingRow {
   updated_at: string;
 }
 
+/** 站点级登录人机验证配置；key 固定为 global，secret 只给 Worker Siteverify 使用，不进入 status、备份或前端响应。 */
+export interface AuthSecuritySettingsRow {
+  key: "global";
+  turnstile_enabled: number;
+  turnstile_site_key: string;
+  turnstile_secret: string;
+  created_at: string;
+  updated_at: string;
+}
+
 /** D1 订阅行模型；snake_case 与整数布尔必须在 `toApiSubscription` 里收敛到 shared schema。 */
 export interface SubscriptionRow {
   id: string;
@@ -171,6 +181,9 @@ export interface SubscriptionRow {
   repeat_reminder_interval: string;
   repeat_reminder_window: string;
   cost_sharing_json?: string;
+  // 内部镜像列只给 D1 通知候选索引使用；API 出站必须继续从 cost_sharing_json 解析。
+  cost_sharing_collection_reminder_enabled: number;
+  cost_sharing_next_collection_reminder_date: string | null;
   extra_json: string;
   created_at: string;
   updated_at: string;

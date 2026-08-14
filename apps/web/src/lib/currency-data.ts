@@ -26,7 +26,7 @@ export type SupportedExchangeRateCurrency = (typeof SUPPORTED_EXCHANGE_RATE_CURR
 
 const SUPPORTED_EXCHANGE_RATE_CURRENCY_SET = new Set<string>(SUPPORTED_EXCHANGE_RATE_CURRENCIES);
 
-/** 产品级常用货币顺序：只用于默认货币管理顺序、旧默认快照迁移和汇率预览口径。 */
+/** 产品级常用货币顺序：只用于生成空配置/新用户的默认货币管理顺序。 */
 export const COMMON_CURRENCY_PRIORITY = [
   "CNY", "USD", "EUR", "GBP", "AUD", "TRY", "NGN", "ARS", "PHP",
 ] as const satisfies readonly SupportedExchangeRateCurrency[];
@@ -77,6 +77,20 @@ export function getIntlCurrencySymbol(currency: string, locale: Locale = DEFAULT
       maximumFractionDigits: 0,
     }).formatToParts(0);
     return symbolParts.find((part) => part.type === "currency")?.value ?? narrowSymbol ?? currency;
+  } catch {
+    return currency;
+  }
+}
+
+export function getIntlCurrencyNarrowSymbol(currency: string, locale: Locale = DEFAULT_LOCALE): string {
+  try {
+    const parts = new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency,
+      currencyDisplay: "narrowSymbol",
+      maximumFractionDigits: 0,
+    }).formatToParts(0);
+    return parts.find((part) => part.type === "currency")?.value ?? currency;
   } catch {
     return currency;
   }

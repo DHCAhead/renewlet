@@ -31,43 +31,53 @@ func TestEnsureSchemaCreatesContractFieldsAndIndexes(t *testing.T) {
 	}
 
 	assertFields(t, app, "subscriptions", map[string]string{
-		"user":                         core.FieldTypeRelation,
-		"name":                         core.FieldTypeText,
-		"logo":                         core.FieldTypeText,
-		"price":                        core.FieldTypeText,
-		"currency":                     core.FieldTypeText,
-		"billingCycle":                 core.FieldTypeSelect,
-		"customDays":                   core.FieldTypeNumber,
-		"customCycleUnit":              core.FieldTypeSelect,
-		"oneTimeTermCount":             core.FieldTypeNumber,
-		"oneTimeTermUnit":              core.FieldTypeSelect,
-		"category":                     core.FieldTypeText,
-		"status":                       core.FieldTypeSelect,
-		"pinned":                       core.FieldTypeBool,
-		"publicHidden":                 core.FieldTypeBool,
-		"paymentMethod":                core.FieldTypeText,
-		"startDate":                    core.FieldTypeText,
-		"nextBillingDate":              core.FieldTypeText,
-		"autoRenew":                    core.FieldTypeBool,
-		"autoCalculateNextBillingDate": core.FieldTypeBool,
-		"trialEndDate":                 core.FieldTypeText,
-		"website":                      core.FieldTypeURL,
-		"notes":                        core.FieldTypeText,
-		"tags":                         core.FieldTypeJSON,
-		"costSharing":                  core.FieldTypeJSON,
-		"extra":                        core.FieldTypeJSON,
-		"reminderDays":                 core.FieldTypeNumber,
-		"repeatReminderEnabled":        core.FieldTypeBool,
-		"repeatReminderInterval":       core.FieldTypeSelect,
-		"repeatReminderWindow":         core.FieldTypeSelect,
-		"created":                      core.FieldTypeAutodate,
-		"updated":                      core.FieldTypeAutodate,
+		"user":                                  core.FieldTypeRelation,
+		"name":                                  core.FieldTypeText,
+		"logo":                                  core.FieldTypeText,
+		"price":                                 core.FieldTypeText,
+		"currency":                              core.FieldTypeText,
+		"billingCycle":                          core.FieldTypeSelect,
+		"customDays":                            core.FieldTypeNumber,
+		"customCycleUnit":                       core.FieldTypeSelect,
+		"oneTimeTermCount":                      core.FieldTypeNumber,
+		"oneTimeTermUnit":                       core.FieldTypeSelect,
+		"category":                              core.FieldTypeText,
+		"status":                                core.FieldTypeSelect,
+		"pinned":                                core.FieldTypeBool,
+		"publicHidden":                          core.FieldTypeBool,
+		"paymentMethod":                         core.FieldTypeText,
+		"startDate":                             core.FieldTypeText,
+		"nextBillingDate":                       core.FieldTypeText,
+		"autoRenew":                             core.FieldTypeBool,
+		"autoCalculateNextBillingDate":          core.FieldTypeBool,
+		"trialEndDate":                          core.FieldTypeText,
+		"website":                               core.FieldTypeURL,
+		"notes":                                 core.FieldTypeText,
+		"tags":                                  core.FieldTypeJSON,
+		"costSharing":                           core.FieldTypeJSON,
+		"costSharingCollectionReminderEnabled":  core.FieldTypeBool,
+		"costSharingNextCollectionReminderDate": core.FieldTypeText,
+		"extra":                                 core.FieldTypeJSON,
+		"reminderDays":                          core.FieldTypeNumber,
+		"repeatReminderEnabled":                 core.FieldTypeBool,
+		"repeatReminderInterval":                core.FieldTypeSelect,
+		"repeatReminderWindow":                  core.FieldTypeSelect,
+		"created":                               core.FieldTypeAutodate,
+		"updated":                               core.FieldTypeAutodate,
 	})
 	assertFields(t, app, "settings", map[string]string{
 		"user":     core.FieldTypeRelation,
 		"settings": core.FieldTypeJSON,
 		"created":  core.FieldTypeAutodate,
 		"updated":  core.FieldTypeAutodate,
+	})
+	assertFields(t, app, authSecurityCollectionName, map[string]string{
+		"key":              core.FieldTypeText,
+		"turnstileEnabled": core.FieldTypeBool,
+		"turnstileSiteKey": core.FieldTypeText,
+		"turnstileSecret":  core.FieldTypeText,
+		"created":          core.FieldTypeAutodate,
+		"updated":          core.FieldTypeAutodate,
 	})
 	assertFields(t, app, "custom_configs", map[string]string{
 		"user":    core.FieldTypeRelation,
@@ -98,6 +108,7 @@ func TestEnsureSchemaCreatesContractFieldsAndIndexes(t *testing.T) {
 	})
 	assertTextFieldRequired(t, app, "subscriptions", "price", true)
 	assertNumberField(t, app, "subscriptions", "reminderDays", false, disabledReminderDays, maxReminderDays)
+	assertTextFieldRequired(t, app, "subscriptions", "costSharingNextCollectionReminderDate", false)
 	assertTextFieldRequired(t, app, "subscriptions", "startDate", false)
 	assertSelectFieldValues(t, app, "subscriptions", "billingCycle", "weekly", "monthly", "quarterly", "semi-annual", "annual", "custom", "one-time")
 	assertSelectFieldValues(t, app, "subscriptions", "customCycleUnit", "day", "week", "month", "year")
@@ -220,6 +231,7 @@ func TestEnsureSchemaCreatesContractFieldsAndIndexes(t *testing.T) {
 	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_trial_reminder")
 	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_repeat_reminder")
 	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_repeat_trial_reminder")
+	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_cost_sharing_collection_due")
 	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_category_order")
 	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_billing_cycle_order")
 	assertIndex(t, app, "subscriptions", "idx_subscriptions_user_currency_order")
@@ -233,6 +245,7 @@ func TestEnsureSchemaCreatesContractFieldsAndIndexes(t *testing.T) {
 	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_trial_reminder", "user, trialEndDate, id")
 	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_repeat_reminder", "user, repeatReminderEnabled, nextBillingDate, id")
 	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_repeat_trial_reminder", "user, repeatReminderEnabled, status, trialEndDate, id")
+	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_cost_sharing_collection_due", "user, costSharingCollectionReminderEnabled, costSharingNextCollectionReminderDate, id")
 	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_category_order", "user, category, created, id")
 	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_billing_cycle_order", "user, billingCycle, created, id")
 	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_currency_order", "user, currency, created, id")
@@ -243,6 +256,7 @@ func TestEnsureSchemaCreatesContractFieldsAndIndexes(t *testing.T) {
 	assertIndexDefinition(t, app, "subscriptions", "idx_subscriptions_user_repeat_reminder_order", "user, repeatReminderEnabled, created, id")
 	assertIndex(t, app, "subscription_scheduler_states", "idx_subscription_scheduler_states_user_unique")
 	assertIndex(t, app, "settings", "idx_settings_user_unique")
+	assertIndex(t, app, authSecurityCollectionName, "idx_auth_security_settings_key_unique")
 	assertIndex(t, app, "custom_configs", "idx_custom_configs_user_unique")
 	assertIndex(t, app, "notification_jobs", "idx_notification_jobs_user_local_time_unique")
 	assertIndex(t, app, "calendar_feeds", "idx_calendar_feeds_user_all_unique")

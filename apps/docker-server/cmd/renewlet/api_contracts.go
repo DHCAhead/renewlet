@@ -57,9 +57,10 @@ type healthResponse struct {
 // appStatusResponse 是认证前 capability 真相源。
 // 登录页、setup 页和设置页 demo 限制都从这里读取；真正写入仍由各 route/hook 再次校验。
 type appStatusResponse struct {
-	SetupRequired bool `json:"setupRequired"`
-	SetupEnabled  bool `json:"setupEnabled"`
-	DemoMode      bool `json:"demoMode"`
+	SetupRequired bool                  `json:"setupRequired"`
+	SetupEnabled  bool                  `json:"setupEnabled"`
+	DemoMode      bool                  `json:"demoMode"`
+	Turnstile     turnstilePublicConfig `json:"turnstile"`
 }
 
 // setupStatusResponse 描述旧 setup 入口是否可用。
@@ -146,11 +147,14 @@ type passkeyWebAuthnOptionsResponse struct {
 type loginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`
+	// turnstileToken 只保护邮箱密码登录提交；Passkey、MFA 二阶段和首次 setup 不能复用这个字段。
+	TurnstileToken string `json:"turnstileToken,omitempty"`
 }
 
 func (r *loginRequest) Validate(locale appLocale) error {
 	r.Email = strings.TrimSpace(r.Email)
-	if !isValidEmailAddress(r.Email) || r.Password == "" || len(r.Password) > 72 {
+	r.TurnstileToken = strings.TrimSpace(r.TurnstileToken)
+	if !isValidEmailAddress(r.Email) || r.Password == "" || len(r.Password) > 72 || len(r.TurnstileToken) > 2048 {
 		return errors.New(serverText(locale, "auth.invalidEmailOrPassword"))
 	}
 	return nil
@@ -365,8 +369,51 @@ type systemRestartRequest struct{}
 // calendarFeedCreateRequest 只允许空对象，用于显式拒绝前端/客户端误传 token 等敏感字段。
 type calendarFeedCreateRequest struct{}
 
-// subscriptionRenewRequest 只允许空对象；手动续订的对象由 URL id 和当前登录用户共同确定。
-type subscriptionRenewRequest struct{}
+// subscriptionRenewRequest 是手动续订的显式 payload；URL id 和当前登录用户仍是 owner 写入边界。
+type subscriptionRenewRequest struct {
+	Mode                         string                    `json:"mode"`
+	Price                        string                    `json:"price"`
+	Currency                     string                    `json:"currency"`
+	StartDate                    optionalJSONField[string] `json:"startDate"`
+	NextBillingDate              string                    `json:"nextBillingDate"`
+	AutoCalculateNextBillingDate bool                      `json:"autoCalculateNextBillingDate"`
+}
+
+func (r *subscriptionRenewRequest) Validate(locale appLocale) error {
+	r.Mode = strings.TrimSpace(r.Mode)
+	if r.Mode != "continue" && r.Mode != "restart" {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	price, err := canonicalMoneyString(r.Price)
+	if err != nil {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	r.Price = price
+	// shared/Worker 都把货币当作大写 ISO 边界；Docker 不能在这里自动 upper，否则两端会接受不同请求。
+	r.Currency = strings.TrimSpace(r.Currency)
+	if !currencyCodeRe.MatchString(r.Currency) {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	if r.StartDate.Set && !r.StartDate.Null {
+		r.StartDate.Value = strings.TrimSpace(r.StartDate.Value)
+	}
+	r.NextBillingDate = strings.TrimSpace(r.NextBillingDate)
+	if r.Mode == "restart" && (!r.StartDate.Set || r.StartDate.Null || r.StartDate.Value == "") {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	if r.StartDate.Set && !r.StartDate.Null && r.StartDate.Value != "" {
+		if err := requireDateOnly(r.StartDate.Value, "START_DATE"); err != nil {
+			return errors.New(serverText(locale, "common.invalidRequestParameters"))
+		}
+	}
+	if err := requireDateOnly(r.NextBillingDate, "NEXT_BILLING_DATE"); err != nil {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	if r.StartDate.Set && !r.StartDate.Null && r.StartDate.Value != "" && r.NextBillingDate < r.StartDate.Value {
+		return errors.New(serverText(locale, "common.invalidRequestParameters"))
+	}
+	return nil
+}
 
 // systemBuildInfo 是前端版本弹窗展示的构建元数据；发布构建由 CI ldflags 注入。
 type systemBuildInfo struct {

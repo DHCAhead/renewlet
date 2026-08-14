@@ -1,20 +1,17 @@
 import { createDefaultAppSettings } from "@renewlet/shared/settings-defaults";
 import {
   appSettingsSchema,
-  DINGTALK_CONTENT_TEMPLATE_MAX_LENGTH,
-  DINGTALK_TITLE_TEMPLATE_MAX_LENGTH,
-  settingsUpdateBodySchema,
   type ApiAppSettings,
 } from "@renewlet/shared/schemas/settings";
+import {
+  normalizeSettingsValue,
+} from "@renewlet/shared/settings-normalization";
 import { apiSubscriptionSchema, type ApiSubscription } from "@renewlet/shared/schemas/subscriptions";
 import { customConfigSchema } from "@renewlet/shared/schemas/custom-config";
-import { cleanBuiltInIconSourceSettingsPatch, mergeBuiltInIconSourceSettings } from "@renewlet/shared/built-in-icons";
-import { cleanOnlineIconSourceSettingsPatch, mergeOnlineIconSourceSettings } from "@renewlet/shared/online-icon-sources";
 import { DISABLED_REMINDER_DAYS, MAX_REMINDER_DAYS } from "@renewlet/shared/runtime";
 import { moneyFromUnknown } from "@renewlet/shared/money";
 import type { AdminUser } from "@renewlet/shared/schemas/admin";
 import type { AssetInUseDetails } from "@renewlet/shared/schemas/media";
-import type { z } from "zod";
 import type { ApiTokenRow, AssetRow, Env, NotificationJobRow, SubscriptionRow, TelegramBotBindingRow, UserRow } from "./types";
 
 /**
@@ -68,6 +65,8 @@ const subscriptionColumnNames = [
   "repeat_reminder_interval",
   "repeat_reminder_window",
   "cost_sharing_json",
+  "cost_sharing_collection_reminder_enabled",
+  "cost_sharing_next_collection_reminder_date",
   "extra_json",
   "created_at",
   "updated_at",
@@ -259,85 +258,14 @@ export async function putSettings(env: Env, userId: string, settings: ApiAppSett
   return parsed;
 }
 
-export type ApiAppSettingsPatch = z.infer<typeof settingsUpdateBodySchema>;
-
-/** settings_json 的 nested 字段必须在同一处合并；调用方不能用浅拷贝覆盖来源开关或 AI 凭据对象。 */
-export function mergeSettingsPatch(current: ApiAppSettings, patch: ApiAppSettingsPatch): ApiAppSettings {
-  return appSettingsSchema.parse({
-    ...current,
-    ...patch,
-    aiRecognition: {
-      ...current.aiRecognition,
-      ...patch.aiRecognition,
-    },
-    builtInIconSources: mergeBuiltInIconSourceSettings(current.builtInIconSources, cleanBuiltInIconSourceSettingsPatch(patch.builtInIconSources)),
-    onlineIconSources: mergeOnlineIconSourceSettings(current.onlineIconSources, cleanOnlineIconSourceSettingsPatch(patch.onlineIconSources)),
-  });
-}
-
 export function normalizeSettingsJson(value: string): ApiAppSettings {
   try {
-    const parsed = normalizeStoredSettingsPatch(JSON.parse(value) as unknown);
-    const result = settingsUpdateBodySchema.safeParse(parsed);
-    if (result.success) {
-      const defaults = createDefaultAppSettings();
-      // 历史 settings_json 缺字段时只在读取边界补默认值，不写回 D1，也不触碰订阅自己的显式 reminder_days。
-      return mergeSettingsPatch(defaults, result.data);
-    }
+    // 历史 settings_json 缺字段时只在读取边界补默认值，不写回 D1，也不触碰订阅自己的显式 reminder_days。
+    return normalizeSettingsValue(JSON.parse(value) as unknown, createDefaultAppSettings());
   } catch {
     // D1 里 settings_json 不是可信源；坏 JSON 只能回落默认值，不能拖垮整个 Worker。
   }
   return createDefaultAppSettings();
-}
-
-function normalizeStoredSettingsPatch(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  // 写入 API 仍严格拒绝非法值；读取坏库时只修复可恢复字段，不让整份 settings 掉默认。
-  const telegramMessageFormat = value["telegramMessageFormat"];
-  const dingtalkMessageType = value["dingtalkMessageType"];
-  const dingtalkTitleTemplate = value["dingtalkTitleTemplate"];
-  const dingtalkContentTemplate = value["dingtalkContentTemplate"];
-  const subscriptionPriceReferenceCurrency = value["subscriptionPriceReferenceCurrency"];
-  const monthlyBudget = moneyFromUnknown(value["monthlyBudget"]);
-  return {
-    ...value,
-    ...(monthlyBudget ? { monthlyBudget } : {}),
-    ...(
-      subscriptionPriceReferenceCurrency === undefined
-      || subscriptionPriceReferenceCurrency === "default"
-      || (typeof subscriptionPriceReferenceCurrency === "string" && /^[A-Z]{3}$/.test(subscriptionPriceReferenceCurrency))
-        ? {}
-        : { subscriptionPriceReferenceCurrency: "default" }
-    ),
-    ...(
-      telegramMessageFormat === undefined || telegramMessageFormat === "plain" || telegramMessageFormat === "html"
-        ? {}
-        : { telegramMessageFormat: "plain" }
-    ),
-    ...(
-      dingtalkMessageType === undefined || dingtalkMessageType === "markdown" || dingtalkMessageType === "text"
-        ? {}
-        : { dingtalkMessageType: "markdown" }
-    ),
-    ...(
-      typeof dingtalkTitleTemplate === "string" && codePointLength(dingtalkTitleTemplate) <= DINGTALK_TITLE_TEMPLATE_MAX_LENGTH
-        ? {}
-        : { dingtalkTitleTemplate: "" }
-    ),
-    ...(
-      typeof dingtalkContentTemplate === "string" && codePointLength(dingtalkContentTemplate) <= DINGTALK_CONTENT_TEMPLATE_MAX_LENGTH
-        ? {}
-        : { dingtalkContentTemplate: "" }
-    ),
-  };
-}
-
-function codePointLength(value: string): number {
-  return Array.from(value).length;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** getCustomConfig 保留用户自定义文本原貌；产品内置标签翻译不在 Worker 里生成。 */
@@ -433,6 +361,7 @@ export async function listNotificationScheduleCandidateSubscriptions(
   options: { scheduledLocalDate: string; includeExpired: boolean; showExpired: boolean },
 ): Promise<SubscriptionRow[]> {
   const maxDate = addDateOnlyDays(options.scheduledLocalDate, MAX_REMINDER_DAYS);
+  // 三类日常候选分支各自走日期索引；UNION 后再由 collector 做 date-only 精确判断。
   const selects = [
     `SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
       WHERE user_id = ? AND reminder_days != ? AND next_billing_date >= ? AND next_billing_date <= ?`,
@@ -448,7 +377,12 @@ export async function listNotificationScheduleCandidateSubscriptions(
       WHERE user_id = ? AND reminder_days != ? AND next_billing_date < ?`);
     params.push(userId, DISABLED_REMINDER_DAYS, options.scheduledLocalDate);
   }
-  // scheduled cron 先用索引列缩到候选集合；精确 reminderDays、fixed-term、expired 和 repeat 语义仍由 collect* 统一过滤。
+  selects.push(`SELECT ${SUBSCRIPTION_COLUMNS} FROM subscriptions
+      WHERE user_id = ? AND cost_sharing_collection_reminder_enabled = 1
+        AND cost_sharing_next_collection_reminder_date IS NOT NULL
+        AND cost_sharing_next_collection_reminder_date <= ?`);
+  params.push(userId, options.scheduledLocalDate);
+  // scheduled cron 只走索引镜像列缩候选；精确 reminderDays、成员周期和收款成员 payload 由 collector 统一过滤。
   const result = await env.DB.prepare(`${selects.join("\nUNION\n")}\nORDER BY created_at DESC, id DESC`)
     .bind(...params)
     .all<SubscriptionRow>();
