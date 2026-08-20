@@ -57,6 +57,10 @@ func main() {
 	if err := validateCustomHeadScriptEnv(); err != nil {
 		log.Fatal(err)
 	}
+	pprofRuntime, err := startPprofFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
 	logUpstreamHTTPProxyEnvironment(nil)
 
 	app := pocketbase.New()
@@ -86,7 +90,18 @@ func main() {
 		if err := ensureSchema(e.App); err != nil {
 			return err
 		}
+		if err := defaultSystemUpdateService.InitializeState(e.App.DataDir()); err != nil {
+			return err
+		}
 		return ensureDemoMode(e.App)
+	})
+	app.OnTerminate().BindFunc(func(e *core.TerminateEvent) error {
+		// 更新任务只受服务生命周期和总超时控制；浏览器断开不会取消，PocketBase 退出则统一收敛后台工作。
+		defaultSystemUpdateService.Shutdown()
+		if err := pprofRuntime.Shutdown(); err != nil {
+			return err
+		}
+		return e.Next()
 	})
 
 	registerAuthHooks(app)
@@ -108,7 +123,11 @@ func main() {
 	})
 
 	if err := app.Start(); err != nil {
+		_ = pprofRuntime.Shutdown()
 		log.Fatal(err)
+	}
+	if err := pprofRuntime.Shutdown(); err != nil {
+		log.Printf("pprof shutdown failed: %v", err)
 	}
 }
 
