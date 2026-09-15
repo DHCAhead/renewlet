@@ -38,8 +38,8 @@
   ],
   "webBudget": {
     "authenticatedIdleRoutePreloads": 0,
-    "subscriptionCollectionCacheEntries": 1,
-    "dataRequests": 2
+    "subscriptionCollectionCacheEntries": 2,
+    "dataRequests": 3
   },
   "scenarios": [
     {
@@ -80,6 +80,21 @@
         "tagRows": 2000,
         "autoRenew": 501,
         "repeatReminder": 251,
+        "combinedFilterIndices": [1]
+      },
+      "operationBudget": {
+        "derivedWriteBase": 6,
+        "listReadQueries": 2
+      }
+    },
+    {
+      "size": 5000,
+      "expected": {
+        "total": 5000,
+        "statusCounts": { "trial": 1001, "active": 1000, "expired": 999, "paused": 999, "cancelled": 1001 },
+        "tagRows": 10000,
+        "autoRenew": 2501,
+        "repeatReminder": 1251,
         "combinedFilterIndices": [1]
       },
       "operationBudget": {

@@ -46,10 +46,6 @@ vi.mock("@/hooks/use-cropped-image-upload", () => ({
   }),
 }));
 
-vi.mock("@/components/image-crop-dialog", () => ({
-  ImageCropDialog: () => null,
-}));
-
 function expectMediaCandidateRequest(name: string) {
   const call = mocks.apiFetch.mock.calls.find(([url]) => url === "/api/app/media/candidates");
   expect(call?.[0]).toBe("/api/app/media/candidates");
@@ -167,6 +163,39 @@ describe("IconPicker", () => {
     expect(await screen.findByAltText(binanceLabel)).toHaveClass("media-thumbnail-image");
   });
 
+  it("keeps the icon search popover open when the search button is clicked", async () => {
+    const user = userEvent.setup();
+    let resolveRequest: ((value: unknown) => void) | undefined;
+    mocks.apiFetch.mockImplementation((url: string) => {
+      if (url === "/api/app/media/candidates") {
+        return new Promise((resolve) => {
+          resolveRequest = resolve;
+        });
+      }
+      return Promise.resolve({});
+    });
+
+    render(<IconPicker value={undefined} onChange={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "搜索" }));
+    const input = screen.getByPlaceholderText("输入名称...");
+    const popover = input.closest<HTMLElement>('[role="dialog"]');
+    if (!popover) throw new Error("Expected icon search popover to be open.");
+    await user.type(input, "Binance");
+    await user.click(within(popover).getByRole("button", { name: "搜索" }));
+
+    expect(input.closest('[role="dialog"]')).toBe(popover);
+    expect(input).toHaveValue("Binance");
+
+    resolveRequest?.({
+      items: [{ id: "search", autoCandidate: null, candidates: { best: null, builtIn: [], appStore: [], favicon: [] } }],
+    });
+    await waitFor(() => {
+      expect(input.closest('[role="dialog"]')).toBe(popover);
+      expect(input).toHaveValue("Binance");
+    });
+  });
+
   it("allows SVG files in the custom icon file picker", () => {
     const { container } = render(<IconPicker value={undefined} onChange={vi.fn()} />);
     const input = container.querySelector<HTMLInputElement>('input[type="file"]');
@@ -180,7 +209,7 @@ describe("IconPicker", () => {
 
     render(<IconPicker value="https://example.com/icon.svg" onChange={onChange} />);
 
-    const icon = screen.getByAltText("Icon");
+    const icon = screen.getByAltText("图标");
     const iconPreview = icon.closest(".media-thumbnail-canvas");
     const clearIconButton = screen.getByRole("button", { name: "清除图标" });
     expect(icon).toHaveClass("media-thumbnail-image");

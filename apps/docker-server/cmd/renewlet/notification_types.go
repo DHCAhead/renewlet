@@ -14,7 +14,6 @@ import (
 )
 
 const (
-	notificationStatusPending = "pending"
 	notificationStatusSending = "sending"
 	notificationStatusSent    = "sent"
 	notificationStatusFailed  = "failed"
@@ -61,7 +60,7 @@ type appSettings struct {
 	ThemeVariant                       string                    `json:"themeVariant"`
 	ThemeCustomColor                   themeCustomColor          `json:"themeCustomColor"`
 	ShowExpired                        bool                      `json:"showExpired"`
-	Locale                             string                    `json:"locale"`
+	LocalePreference                   string                    `json:"localePreference"`
 	DefaultCurrency                    string                    `json:"defaultCurrency"`
 	PublicStatusCurrency               string                    `json:"publicStatusCurrency"`
 	SubscriptionPriceReferenceEnabled  bool                      `json:"subscriptionPriceReferenceEnabled"`
@@ -335,7 +334,7 @@ type notificationJobResultMessage struct {
 	Items      []notificationContentItem `json:"items"`
 }
 
-type notificationJobResult struct {
+type notificationJobMetadata struct {
 	Source         string                        `json:"source"`
 	Reason         *string                       `json:"reason"`
 	Force          bool                          `json:"force"`
@@ -343,8 +342,18 @@ type notificationJobResult struct {
 	TriggeredAtUTC string                        `json:"triggeredAtUtc"`
 	Schedule       localScheduleOccurrence       `json:"schedule"`
 	Settings       notificationJobResultSettings `json:"settings"`
-	Message        notificationJobResultMessage  `json:"message"`
 	Channels       jobChannels                   `json:"channels"`
+}
+
+// 重试只读取有界元数据；公开 DTO 在历史查询时连接完整消息，不复用持久化结构充当响应契约。
+type notificationJobResult struct {
+	notificationJobMetadata
+	Message notificationJobResultMessage `json:"message"`
+}
+
+type notificationJobStoredResult struct {
+	notificationJobMetadata
+	MessageChunkCount int `json:"messageChunkCount"`
 }
 
 // notificationHistoryJob 是前端历史面板消费的任务 DTO。
@@ -464,6 +473,7 @@ type pushPlusSendResponse struct {
 	Data string `json:"data"`
 }
 
+// 默认设置用于注册、补建和后台缺行兜底；语言始终保存 auto，当前请求语言不得注入账号设置。
 func defaultAppSettings() appSettings {
 	return appSettings{
 		AdminUsername:                      "admin",
@@ -471,7 +481,7 @@ func defaultAppSettings() appSettings {
 		ThemeVariant:                       "emerald",
 		ThemeCustomColor:                   themeCustomColor{H: 160, S: 84, L: 39},
 		ShowExpired:                        true,
-		Locale:                             string(defaultAppLocale),
+		LocalePreference:                   string(autoLocalePreference),
 		DefaultCurrency:                    "CNY",
 		PublicStatusCurrency:               "inherit",
 		SubscriptionPriceReferenceEnabled:  false,

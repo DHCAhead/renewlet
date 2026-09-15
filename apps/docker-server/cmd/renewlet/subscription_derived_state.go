@@ -38,6 +38,7 @@ type subscriptionListIndexRow struct {
 	RepeatReminderEnabled int    `db:"repeat_reminder_enabled"`
 	CreatedAt             string `db:"created_at"`
 	UpdatedAt             string `db:"updated_at"`
+	Inactive              int    `db:"inactive"`
 	TotalCount            int    `db:"total_count"`
 }
 
@@ -365,6 +366,12 @@ func applySubscriptionDerivedMutation(app core.App, mutation subscriptionDerived
 	afterUser := subscriptionRecordOwner(mutation.After)
 	// 先清 before 的行级派生值，再写 after，最后应用 aggregate delta；调用方必须把整个序列包在事实写事务内。
 	if mutation.Before != nil {
+		if mutation.After == nil {
+			// D1 由外键级联撤销 Feed；PocketBase 的 subscriptionId 只是文本，bearer 密钥必须在事实删除事务内显式收敛。
+			if err := deleteSubscriptionCalendarFeeds(app, beforeUser, mutation.Before.Id); err != nil {
+				return err
+			}
+		}
 		if _, err := app.DB().NewQuery("DELETE FROM subscription_tags WHERE user_id = {:user} AND subscription_id = {:id}").
 			Bind(dbx.Params{"user": beforeUser, "id": mutation.Before.Id}).Execute(); err != nil {
 			return err
@@ -642,15 +649,11 @@ func getSubscriptionRecordsByIDs(app core.App, userID string, ids []string) ([]*
 	if len(ids) == 0 {
 		return []*core.Record{}, nil
 	}
-	params := dbx.Params{"user": userID}
-	conditions := make([]string, len(ids))
-	for index, id := range ids {
-		key := fmt.Sprintf("id%d", index)
-		conditions[index] = "id = {:" + key + "}"
-		params[key] = id
-	}
-	// 列表固定为“投影取页 + owner-scoped 批量回表”两次查询；这里必须按投影 ID 复原顺序，不能依赖 SQLite IN 返回顺序。
-	records, err := app.FindRecordsByFilter("subscriptions", "user = {:user} && ("+strings.Join(conditions, " || ")+")", "", len(ids), 0, params)
+	// 原生 IN 避免 5000 条 index 成功路径生成超深 OR 表达式；owner 条件仍在同一 SQL 中，返回后再按投影 ID 复原顺序。
+	records, err := app.FindRecordsByIds("subscriptions", ids, func(query *dbx.SelectQuery) error {
+		query.AndWhere(dbx.NewExp("subscriptions.user = {:user}", dbx.Params{"user": userID}))
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}

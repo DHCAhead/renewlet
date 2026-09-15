@@ -293,10 +293,7 @@ func normalizeSubscriptionRecordWithSettings(record *core.Record, mirrorSettings
 		if customDays <= 0 {
 			return errors.New("CUSTOM_DAYS_REQUIRED")
 		}
-		if customCycleUnit == "" {
-			// 旧 custom 数据没有单位字段；持久层读写边界统一按 day 解释，避免历史自定义天数被误作月/年。
-			record.Set("customCycleUnit", "day")
-		} else if !isValidCustomCycleUnit(customCycleUnit) {
+		if !isValidCustomCycleUnit(customCycleUnit) {
 			return errors.New("CUSTOM_CYCLE_UNIT_INVALID")
 		}
 	} else if customDays < 0 {
@@ -479,15 +476,20 @@ func normalizeNotificationJobRecord(record *core.Record) error {
 	if resultText == "" || resultText == "null" || resultText == "{}" {
 		record.Set("result", emptyJSONPayload{})
 	} else {
-		var result notificationJobResult
-		if err := decodeStrictJSONBytesInto(resultData, &result, localeZhCN, false); err != nil {
+		var result notificationJobStoredResult
+		if err := decodeStrictJSONBytesInto(resultData, &result, defaultAppLocale, false); err != nil {
 			return fmt.Errorf("NOTIFICATION_RESULT_INVALID: %w", err)
 		}
 		if result.Source != "cron" {
 			return errors.New("NOTIFICATION_RESULT_SOURCE_INVALID")
 		}
-		// 写入边界仍收敛为当前 cron result；历史读路径不再替旧 result 做兼容重塑。
-		record.Set("result", normalizeNotificationJobResult(result))
+		if result.MessageChunkCount <= 0 {
+			return errors.New("NOTIFICATION_MESSAGE_SNAPSHOT_REQUIRED")
+		}
+		// 持久化校验只接受分离后的元数据；消息数量不再参与这个有界字段，也不接受旧内嵌消息。
+		result.Settings.EnabledChannels = uniqueValidChannels(result.Settings.EnabledChannels)
+		result.Channels = normalizeJobChannels(result.Channels)
+		record.Set("result", result)
 	}
 	return nil
 }
@@ -685,7 +687,7 @@ func customConfigFromValue(value interface{}) (customConfigPayload, error) {
 	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
 		return config, err
 	}
-	if err := decodeStrictJSONBytesInto(data, &config, localeZhCN, false); err != nil {
+	if err := decodeStrictJSONBytesInto(data, &config, defaultAppLocale, false); err != nil {
 		return config, err
 	}
 	return config, nil

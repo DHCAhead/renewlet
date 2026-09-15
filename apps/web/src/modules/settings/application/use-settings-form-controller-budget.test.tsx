@@ -14,6 +14,7 @@ import {
   SETTINGS_THEME_MODE_STORAGE_KEY,
 } from "@/lib/theme-storage";
 import { useSettingsFormController } from "./use-settings-form-controller";
+import type { SettingsNotificationHistoryController } from "./use-notification-history";
 
 const BASE_SETTINGS: AppSettings = {
   ...DEFAULT_SETTINGS,
@@ -21,9 +22,13 @@ const BASE_SETTINGS: AppSettings = {
 };
 
 type SettingsMutationCommand = { patch: AppSettings; secretUpdates: SettingsSecretUpdates };
+type AppToast = (typeof import("@/components/ui/sonner"))["toast"];
 
 const mocks = vi.hoisted(() => ({
-  toast: vi.fn(),
+  toast: {
+    success: vi.fn<AppToast["success"]>(),
+    error: vi.fn<AppToast["error"]>(),
+  },
   updateSettingsMutateAsync: vi.fn<(command: SettingsMutationCommand) => Promise<unknown>>(),
   refreshRates: vi.fn(),
   remoteSettings: undefined as unknown,
@@ -33,12 +38,10 @@ const mocks = vi.hoisted(() => ({
   setTheme: vi.fn(),
   clearThemeModeOverride: vi.fn(),
   theme: "dark",
-  setLocale: vi.fn(),
+  commitLocalePreference: vi.fn(),
+  syncRemoteLocalePreference: vi.fn(),
   testConnection: vi.fn(),
-  refetchNotificationHistory: vi.fn(),
-  calendarFeedStatus: { data: { enabled: false, feedUrl: undefined as string | undefined }, isLoading: false },
-  createCalendarFeedMutateAsync: vi.fn(),
-  deleteCalendarFeedMutateAsync: vi.fn(),
+  refetchNotificationHistory: vi.fn<() => Promise<void>>(),
   publicStatusPageStatus: { data: { enabled: false, pageUrl: undefined as string | undefined, showPrices: false }, isLoading: false },
   createPublicStatusPageMutateAsync: vi.fn(),
   updatePublicStatusPageMutateAsync: vi.fn(),
@@ -64,8 +67,8 @@ function settingsMutationResult(command: SettingsMutationCommand) {
   return { settings: command.patch, secretStatus };
 }
 
-vi.mock("@/hooks/use-toast", () => ({
-  useToast: () => ({ toast: mocks.toast }),
+vi.mock("@/components/ui/sonner", () => ({
+  toast: mocks.toast,
 }));
 
 vi.mock("@/hooks/use-settings", () => ({
@@ -88,6 +91,7 @@ vi.mock("@/hooks/use-report-exchange-rates", () => ({
     rates: {},
     activeProvider: "floatrates",
     loading: false,
+    isRefreshing: false,
     lastUpdated: null,
     refresh: mocks.refreshRates,
     error: null,
@@ -97,17 +101,15 @@ vi.mock("@/hooks/use-report-exchange-rates", () => ({
 }));
 
 vi.mock("@/hooks/use-subscriptions", () => ({
-  useSubscriptions: () => ({ data: [], isPending: false, status: "success" }),
+  useSubscriptionFacets: () => ({
+    data: { total: 0, categoryCounts: {}, tags: [], visibleCount: 0, hiddenCount: 0 },
+    isPending: false,
+    status: "success",
+  }),
 }));
 
 vi.mock("@/hooks/use-password-reset-availability", () => ({
   usePasswordResetAvailability: () => true,
-}));
-
-vi.mock("@/hooks/use-calendar-feed", () => ({
-  useCalendarFeedStatus: () => mocks.calendarFeedStatus,
-  useCreateCalendarFeed: () => ({ mutateAsync: mocks.createCalendarFeedMutateAsync, isPending: false }),
-  useDeleteCalendarFeed: () => ({ mutateAsync: mocks.deleteCalendarFeedMutateAsync, isPending: false }),
 }));
 
 vi.mock("@/hooks/use-built-in-icon-index", () => ({
@@ -147,7 +149,8 @@ vi.mock("@/lib/theme-provider", () => ({
 }));
 
 vi.mock("@/contexts/CustomConfigContext", () => ({
-  useCustomConfig: () => ({ config: mocks.customConfig, saveConfig: mocks.saveConfig }),
+  useCustomConfigState: () => ({ config: mocks.customConfig }),
+  useCustomConfigActions: () => ({ saveConfig: mocks.saveConfig }),
 }));
 
 vi.mock("@/services/runtime", () => ({
@@ -159,7 +162,6 @@ vi.mock("@/services/runtime", () => ({
 vi.mock("@/i18n/I18nProvider", () => {
   const messages: Record<string, string> = {
     "settings.saved": "设置已保存",
-    "settings.savedDescription": "所有更改已同步。",
     "settings.saveFailed": "保存失败",
     "settings.budgetInvalid": "预算金额无效",
     "settings.telegramBotCommandsConfigMissing": "请先填写并保存 Bot Token 和 Chat ID。",
@@ -169,7 +171,8 @@ vi.mock("@/i18n/I18nProvider", () => {
   return {
     useI18n: () => ({
       t: (key: string) => messages[key] ?? key,
-      setLocale: mocks.setLocale,
+      commitLocalePreference: mocks.commitLocalePreference,
+      syncRemoteLocalePreference: mocks.syncRemoteLocalePreference,
     }),
   };
 });
@@ -199,23 +202,37 @@ vi.mock("./use-password-change", () => ({
 }));
 
 vi.mock("./use-notification-history", () => ({
-  useNotificationHistory: () => ({
-    data: undefined,
-    isLoading: false,
-    isFetching: false,
-    error: null,
+  useNotificationHistory: (): SettingsNotificationHistoryController => ({
+    overview: {
+      data: undefined,
+      hasData: false,
+      error: null,
+      isInitialLoading: false,
+      isRefreshing: false,
+      retry: mocks.refetchNotificationHistory,
+    },
+    history: {
+      data: undefined,
+      hasData: false,
+      error: null,
+      isInitialLoading: false,
+      isRefreshing: false,
+      retry: mocks.refetchNotificationHistory,
+    },
     historyStatus: "all",
     setStatus: vi.fn(),
+    limit: 20,
     loadMore: vi.fn(),
-    refetch: mocks.refetchNotificationHistory,
   }),
 }));
 
 describe("useSettingsFormController monthly budget input", () => {
   beforeEach(() => {
-    mocks.toast.mockReset();
+    mocks.toast.success.mockReset();
+    mocks.toast.error.mockReset();
     mocks.updateSettingsMutateAsync.mockReset();
     mocks.refreshRates.mockReset();
+    mocks.refetchNotificationHistory.mockReset().mockResolvedValue(undefined);
     mocks.saveConfig.mockReset();
     mocks.createPublicApiTokenMutateAsync.mockReset();
     mocks.deletePublicApiTokenMutateAsync.mockReset();
@@ -227,7 +244,8 @@ describe("useSettingsFormController monthly budget input", () => {
     mocks.setTheme.mockReset();
     mocks.clearThemeModeOverride.mockReset();
     mocks.theme = "dark";
-    mocks.setLocale.mockReset();
+    mocks.commitLocalePreference.mockReset();
+    mocks.syncRemoteLocalePreference.mockReset();
     localStorage.removeItem(APPEARANCE_PENDING_STORAGE_KEY);
     localStorage.removeItem(SETTINGS_APPEARANCE_PENDING_STORAGE_KEY);
     localStorage.removeItem(SETTINGS_THEME_MODE_STORAGE_KEY);
@@ -241,7 +259,7 @@ describe("useSettingsFormController monthly budget input", () => {
     mocks.appStatus = { setupRequired: false, setupEnabled: true, demoMode: false, turnstile: { enabled: false, siteKey: "" }, isLoading: false };
     mocks.updateSettingsMutateAsync.mockImplementation(async (command: SettingsMutationCommand) => settingsMutationResult(command));
     mocks.saveConfig.mockImplementation(async (config: CustomConfig) => config);
-    mocks.refreshRates.mockResolvedValue(undefined);
+    mocks.refreshRates.mockResolvedValue({ status: "succeeded", warning: null });
   });
 
   afterEach(() => {
@@ -265,11 +283,9 @@ describe("useSettingsFormController monthly budget input", () => {
     });
 
     expect(mocks.updateSettingsMutateAsync).not.toHaveBeenCalled();
-    expect(mocks.toast).toHaveBeenCalledWith(expect.objectContaining({
-      title: "保存失败",
+    expect(mocks.toast.error).toHaveBeenCalledWith("保存失败", {
       description: "预算金额无效",
-      variant: "destructive",
-    }));
+    });
   });
 
   it("updates the monthly budget only when the numeric input is valid", () => {

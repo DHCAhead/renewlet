@@ -14,10 +14,10 @@ import { useRouter } from '@/lib/router';
 import { LayoutDashboard, List, CalendarDays, BarChart3, Settings, Sun, Moon, LogOut } from 'lucide-react';
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import type { SubscriptionDraft } from '@/types/subscription';
+import type { SubscriptionFormSubmission } from '@/types/subscription';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/lib/theme-provider';
-import { useToast } from '@/hooks/use-toast';
+import { toast } from '@/components/ui/sonner';
 import { RenewletBrandMark } from '@/components/brand/renewlet-brand-mark';
 import { getHeaderDesktopNavLinkClass, getHeaderMobileNavLinkClass, headerLayout } from '@/components/header-layout';
 import { authClient } from '@/lib/auth-client';
@@ -25,12 +25,12 @@ import { AddSubscriptionDialog } from '@/components/add-subscription-dialog';
 import { SystemUpdateDialog } from '@/components/system-update-dialog';
 import { useI18n } from '@/i18n/I18nProvider';
 import type { MessageKey } from '@/i18n/messages';
-import { useRoutePreloadPending } from '@/lib/route-resources';
+import { RouteProgress } from '@/components/route-progress';
 import { cn } from '@/lib/utils';
 
 interface HeaderProps {
   /** 新增订阅回调（传入订阅主体数据，不包含 id）。不传则隐藏“新增订阅”按钮。 */
-  onAddSubscription?: (subscription: SubscriptionDraft) => void;
+  onAddSubscription?: (submission: SubscriptionFormSubmission) => void;
   /** 当前用户已有标签建议，用于新增订阅弹窗复用。 */
   availableTags?: readonly string[] | undefined;
   /** 订阅页专属快捷动作，渲染在“新增订阅”旁边。 */
@@ -67,12 +67,10 @@ function renderNavIcon(icon: NavIconKey, className: string) {
 export function Header({ onAddSubscription, availableTags, subscriptionActions }: HeaderProps) {
   const router = useRouter();
   const { theme, setTheme } = useTheme();
-  const { toast } = useToast();
   const { t } = useI18n();
   const { data: sessionData } = authClient.useSession();
   const [systemDialogOpen, setSystemDialogOpen] = useState(false);
   const isAuthenticated = Boolean(sessionData?.user);
-  const isRoutePreloadPending = useRoutePreloadPending();
 
   /**
    * Header 是全局快捷开关，只写本机偏好；账户级外观草稿必须从 Settings 页外观控件产生。
@@ -86,30 +84,16 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
   const handleLogout = async () => {
     try {
       await authClient.signOut();
-      toast({
-        title: t("header.logoutSuccessTitle"),
-        description: t("header.logoutSuccessDescription"),
-      });
+      toast.success(t("header.logoutSuccessTitle"));
       router.replace('/login');
     } catch {
-      toast({
-        title: t("header.logoutFailedTitle"),
-        description: t("error.generic"),
-        variant: "destructive",
-      });
+      toast.error(t("header.logoutFailedTitle"), { description: t("error.generic") });
     }
   };
 
   return (
     <header className={headerLayout.shell} data-testid="app-header">
-      <div
-        aria-hidden="true"
-        data-testid="app-header-route-preload-indicator"
-        className={cn(
-          "pointer-events-none absolute inset-x-0 bottom-0 h-0.5 bg-primary transition-opacity duration-200",
-          isRoutePreloadPending ? "opacity-100" : "opacity-0",
-        )}
-      />
+      <RouteProgress />
       <div className={headerLayout.inner} data-testid="app-header-inner">
         <div className={headerLayout.primaryCluster}>
           <div className={headerLayout.brandCluster}>
@@ -128,7 +112,7 @@ export function Header({ onAddSubscription, availableTags, subscriptionActions }
                   canManageUpdates={sessionData?.user.role === "admin"}
                   contentAlign="start"
                   triggerClassName="w-fit"
-                  badgeClassName="h-6 max-w-[5.75rem] px-2 min-[380px]:max-w-32 sm:h-7 sm:max-w-none sm:px-2.5"
+                  badgeClassName="h-6 max-w-23 px-2 min-[380px]:max-w-32 sm:h-7 sm:max-w-none sm:px-2.5"
                 />
               ) : null}
             </div>

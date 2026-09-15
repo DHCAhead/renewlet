@@ -1,6 +1,7 @@
 import { z } from "zod";
 import notificationScheduleFixturesJson from "./contract-fixtures/notification-schedule-fixtures.json";
 import outboundUrlPolicyFixturesJson from "./contract-fixtures/outbound-url-policy-fixtures.json";
+import subscriptionCollectionContractFixturesJson from "./contract-fixtures/subscription-collection-contract-fixtures.json";
 import subscriptionPerformanceFixturesJson from "./contract-fixtures/subscription-performance-fixtures.json";
 import subscriptionNormalizationFixturesJson from "./contract-fixtures/subscription-normalization-fixtures.json";
 import {
@@ -12,6 +13,10 @@ import {
   isValidDateOnly,
 } from "./runtime";
 import { moneyStringSchema } from "./money";
+import {
+  apiSubscriptionCollectionItemSchema,
+  apiSubscriptionSchema,
+} from "./schemas/subscriptions";
 
 const dateOnlyFixtureSchema = z.string().refine(isValidDateOnly, "Invalid date");
 
@@ -150,7 +155,24 @@ const subscriptionPerformanceFixtureSchema = z.object({
       derivedWriteBase: z.number().int().positive(),
       listReadQueries: z.number().int().positive(),
     }).strict(),
-  }).strict()).length(3),
+  }).strict()).length(4),
+}).strict();
+
+const subscriptionRouteFixtureSchema = z.object({
+  path: z.string().startsWith("/api/app/subscriptions"),
+  methods: z.array(z.enum(["DELETE", "GET", "PATCH", "POST"])).min(1),
+}).strict();
+
+const subscriptionCollectionContractFixtureSchema = z.object({
+  version: z.literal(1),
+  collectionLimit: z.number().int().positive(),
+  manifestRoutes: z.array(subscriptionRouteFixtureSchema).min(1),
+  collectionResponseRoutes: z.array(z.string().startsWith("/api/app/subscriptions")).min(1),
+  boundedCollectionRoutes: z.array(z.string().startsWith("/api/app/subscriptions")).min(1),
+  invalidQueryRoutes: z.array(z.string().startsWith("/api/app/subscriptions")).min(1),
+  detailOnlyFields: z.array(z.string().min(1)).min(1),
+  collectionItems: z.array(apiSubscriptionCollectionItemSchema).length(4),
+  completeSubscription: apiSubscriptionSchema,
 }).strict();
 
 /**
@@ -161,6 +183,7 @@ export const notificationScheduleFixtures = z.array(notificationScheduleFixtureS
 export const subscriptionNormalizationFixtures = z.array(subscriptionNormalizationFixtureSchema).parse(subscriptionNormalizationFixturesJson);
 export const outboundUrlPolicyFixtures = z.array(outboundUrlPolicyFixtureSchema).parse(outboundUrlPolicyFixturesJson);
 export const subscriptionPerformanceFixture = subscriptionPerformanceFixtureSchema.parse(subscriptionPerformanceFixturesJson);
+export const subscriptionCollectionContractFixture = subscriptionCollectionContractFixtureSchema.parse(subscriptionCollectionContractFixturesJson);
 
 export type NotificationScheduleFixture = (typeof notificationScheduleFixtures)[number];
 export type SubscriptionNormalizationFixture = (typeof subscriptionNormalizationFixtures)[number];

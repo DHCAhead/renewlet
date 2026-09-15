@@ -12,8 +12,9 @@ import {
   subscriptionsListQuerySchema,
   subscriptionUpdateBodySchema,
 } from "@renewlet/shared/schemas/subscriptions";
-import { boolToInt, getSettings, getSubscription, newId, nowIso, parseJsonObject, parseStringArray, parseSubscriptionCursor, SUBSCRIPTION_COLUMNS, subscriptionCursor, subscriptionRowValues, toApiSubscription } from "./db";
-import { listSubscriptionsForQuery } from "./subscription-list-filters";
+import { boolToInt, getSettings, getSubscription, newId, nowIso, parseJsonObject, parseStringArray, SUBSCRIPTION_COLUMNS, subscriptionRowValues, toApiSubscription, toApiSubscriptionCollectionItem } from "./db";
+import { listSubscriptionsForQuery, parsePrivateSubscriptionCursor, privateSubscriptionCursor } from "./subscription-list-filters";
+import { subscriptionCollectionQueryInput } from "./subscription-query";
 import { advanceSubscriptionRenewal, dateOnlyInZone } from "./subscription-renewal";
 import type { SubscriptionRenewalResult } from "@renewlet/shared/subscription-renewal";
 import { subscriptionDerivedMutationPlan } from "./subscription-derived-state";
@@ -34,42 +35,22 @@ const subscriptionStorageBodySchema = subscriptionCreateBodySchema.refine((body)
 export async function readSubscriptions(request: Request, env: Env): Promise<Response> {
   const auth = await requireAuth(request, env);
   const url = new URL(request.url);
-  const parsed = subscriptionsListQuerySchema.parse({
-    limit: url.searchParams.get("limit") ?? undefined,
-    cursor: url.searchParams.get("cursor") ?? undefined,
-    q: url.searchParams.get("q") ?? undefined,
-    category: repeatedSearchParam(url.searchParams, "category"),
-    tag: repeatedSearchParam(url.searchParams, "tag"),
-    billingCycle: repeatedSearchParam(url.searchParams, "billingCycle"),
-    paymentMethod: repeatedSearchParam(url.searchParams, "paymentMethod"),
-    currency: repeatedSearchParam(url.searchParams, "currency"),
-    status: url.searchParams.get("status") ?? undefined,
-    renewal: url.searchParams.get("renewal") ?? undefined,
-    nextBillingFrom: url.searchParams.get("nextBillingFrom") ?? undefined,
-    nextBillingTo: url.searchParams.get("nextBillingTo") ?? undefined,
-    pinned: url.searchParams.get("pinned") ?? undefined,
-    publicHidden: url.searchParams.get("publicHidden") ?? undefined,
-    reminderMode: url.searchParams.get("reminderMode") ?? undefined,
-    repeatReminder: url.searchParams.get("repeatReminder") ?? undefined,
-  });
-  if (parsed.cursor && !parseSubscriptionCursor(parsed.cursor)) {
+  const parsed = subscriptionsListQuerySchema.parse(subscriptionCollectionQueryInput(url.searchParams));
+  const cursor = parsePrivateSubscriptionCursor(parsed.cursor);
+  if (parsed.cursor && !cursor) {
     throw new HttpError(400, serverText(requestLocale(request), "common.invalidRequestParameters"), "INVALID_CURSOR");
   }
-  const today = parsed.status ? dateOnlyInZone(new Date(), (await getSettings(env, auth.user.id)).timezone) : "";
-  const page = await listSubscriptionsForQuery(env, auth.user.id, parsed, today);
+  // 首屏按账号时区取 asOf，后续页只能沿用 cursor 值；跨午夜重新计算会让记录换组并破坏 keyset 分页。
+  const today = cursor?.asOf ?? dateOnlyInZone(new Date(), (await getSettings(env, auth.user.id)).timezone);
+  const page = await listSubscriptionsForQuery(env, auth.user.id, parsed, today, cursor);
   const pageRows = page.rows.slice(0, parsed.limit);
   const lastPageRow = pageRows.at(-1);
-  const nextCursor = page.rows.length > parsed.limit && lastPageRow ? subscriptionCursor(lastPageRow) : null;
+  const nextCursor = page.rows.length > parsed.limit && lastPageRow ? privateSubscriptionCursor(lastPageRow, today) : null;
   return successJson(subscriptionsListPayloadSchema.parse({
-    subscriptions: pageRows.map(toApiSubscription),
+    subscriptions: pageRows.map(toApiSubscriptionCollectionItem),
     nextCursor,
     total: page.total,
   }));
-}
-
-function repeatedSearchParam(params: URLSearchParams, name: string): string[] | undefined {
-  const values = params.getAll(name);
-  return values.length > 0 ? values : undefined;
 }
 
 /** 新建订阅走 shared create schema，确保 D1 写入边界与 Go/PocketBase API 保持同形。 */
@@ -240,10 +221,13 @@ export function normalizeSubscriptionBodyForStorage(body: unknown): Subscription
   const parsed = subscriptionStorageBodySchema.parse(body);
   // Worker 没有 PocketBase hook；这里承接 Go 持久层同款规范化，供 create/update/import 三条写入路径共用。
   if (parsed.billingCycle === "custom") {
+    if (parsed.customDays === null || parsed.customDays === undefined || parsed.customCycleUnit === null || parsed.customCycleUnit === undefined) {
+      throw new Error("SUBSCRIPTION_CUSTOM_CYCLE_INVARIANT_VIOLATION");
+    }
     return {
       ...parsed,
-      customDays: parsed.customDays ?? 1,
-      customCycleUnit: parsed.customCycleUnit ?? "day",
+      customDays: parsed.customDays,
+      customCycleUnit: parsed.customCycleUnit,
       oneTimeTermCount: null,
       oneTimeTermUnit: null,
     };
@@ -255,7 +239,7 @@ export function normalizeSubscriptionBodyForStorage(body: unknown): Subscription
       customDays: null,
       customCycleUnit: null,
       oneTimeTermCount: hasTerm ? parsed.oneTimeTermCount : null,
-      oneTimeTermUnit: hasTerm ? parsed.oneTimeTermUnit ?? "month" : null,
+      oneTimeTermUnit: hasTerm ? parsed.oneTimeTermUnit : null,
       autoRenew: false,
       autoCalculateNextBillingDate: false,
     };
@@ -327,6 +311,7 @@ export function toSubscriptionRow(
   options: { settings?: Pick<ApiAppSettings, "timezone" | "notificationReminderDays">; referenceDate?: string } = {},
 ): SubscriptionRow {
   const costSharingMirror = collectionReminderMirror(body, options);
+  const customCycle = subscriptionCustomCycleForStorage(body);
   return {
     id,
     user_id: userId,
@@ -336,8 +321,8 @@ export function toSubscriptionRow(
     currency: body.currency,
     billing_cycle: body.billingCycle,
     // 非 custom 周期必须把自定义字段清空，否则后续编辑会把旧自定义周期“复活”。
-    custom_days: body.billingCycle === "custom" ? body.customDays ?? 1 : null,
-    custom_cycle_unit: body.billingCycle === "custom" ? body.customCycleUnit ?? "day" : null,
+    custom_days: customCycle.days,
+    custom_cycle_unit: customCycle.unit,
     // one-time 服务期是“预付权益期”契约；非 one-time 清空，避免旧买断字段被周期订阅误用于摊销。
     one_time_term_count: body.billingCycle === "one-time" ? body.oneTimeTermCount ?? null : null,
     one_time_term_unit: body.billingCycle === "one-time" ? body.oneTimeTermUnit ?? null : null,
@@ -371,6 +356,14 @@ export function toSubscriptionRow(
     created_at: createdAt,
     updated_at: updatedAt,
   };
+}
+
+function subscriptionCustomCycleForStorage(body: SubscriptionBody): { days: number | null; unit: SubscriptionRow["custom_cycle_unit"] } {
+  if (body.billingCycle !== "custom") return { days: null, unit: null };
+  if (body.customDays === null || body.customDays === undefined || body.customCycleUnit === null || body.customCycleUnit === undefined) {
+    throw new Error("SUBSCRIPTION_CUSTOM_CYCLE_INVARIANT_VIOLATION");
+  }
+  return { days: body.customDays, unit: body.customCycleUnit };
 }
 
 export async function refreshCostSharingCollectionReminderMirrors(

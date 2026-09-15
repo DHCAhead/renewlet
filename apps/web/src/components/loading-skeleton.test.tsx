@@ -8,6 +8,7 @@ describe("HeaderSkeleton", () => {
     render(<DashboardPageSkeleton />);
 
     expect(screen.getByTestId("app-header-skeleton")).toHaveClass("sticky", "top-0", "z-50", "bg-card/80");
+    expect(screen.getByTestId("route-progress")).toHaveClass("absolute", "bottom-0", "h-0.5", "opacity-0");
     expect(screen.getByTestId("app-header-skeleton-inner")).toHaveClass("max-w-7xl", "justify-between", "gap-3");
     expect(screen.getByTestId("app-header-actions-skeleton")).toHaveClass("min-w-0", "shrink-0", "justify-end");
 
@@ -34,7 +35,7 @@ describe("DashboardPageSkeleton", () => {
     const trials = screen.getByTestId("dashboard-skeleton-stat-trials");
 
     expect(grid).toHaveClass("grid", "gap-3", "sm:gap-5", "sm:grid-cols-2", "lg:grid-cols-4");
-    expect(grid.className).toContain("[grid-template-columns:repeat(auto-fit,minmax(min(100%,10rem),1fr))]");
+    expect(grid.className).toContain("grid-cols-[repeat(auto-fit,minmax(min(100%,10rem),1fr))]");
     expect(monthlySpend).toHaveClass("p-4", "lg:p-6", "col-span-full", "sm:col-span-1");
     expect(trials).toHaveClass("p-4", "lg:p-6", "col-span-full", "sm:col-span-1");
   });
@@ -66,7 +67,7 @@ describe("SettingsPageSkeleton", () => {
     expect(mobileHeader).not.toHaveClass("-mx-4", "border-b", "top-[calc(8.25rem+env(safe-area-inset-top))]");
     expect(desktopNav).toHaveClass(
       "sticky",
-      "top-[var(--settings-desktop-sticky-top)]",
+      "top-(--settings-desktop-sticky-top)",
       "max-h-[calc(var(--app-viewport-height)-var(--settings-desktop-sticky-top)-1rem)]",
       "bg-card/70",
       "shadow-card",
@@ -82,7 +83,7 @@ describe("SettingsPageSkeleton", () => {
       "bg-card",
       "p-4",
       "sm:p-6",
-      "scroll-mt-[var(--settings-section-scroll-offset)]",
+      "scroll-mt-(--settings-section-scroll-offset)",
     );
     expect(firstSection).not.toHaveClass("lg:scroll-mt-24");
     expect(firstSection).not.toHaveClass("p-6");

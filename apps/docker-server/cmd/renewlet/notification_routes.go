@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
 )
 
@@ -57,6 +56,7 @@ func cronBearerSecretMatches(expected string, authorization string) bool {
 
 // handleNotificationTest 发送单个渠道的测试通知。
 // 注意： settings patch 只在本次请求内生效，不会写回 settings collection。
+// 测试正文跟随当前请求语言，不能借临时 patch 改写账号 localePreference。
 func handleNotificationTest(app core.App, e *core.RequestEvent) error {
 	locale := requestLocale(e.Request)
 	body, err := decodeStrictJSON[notificationTestRequest](e.Request, locale)
@@ -64,13 +64,12 @@ func handleNotificationTest(app core.App, e *core.RequestEvent) error {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
 
-	settings, err := currentUserSettings(app, e.Auth, body.Settings)
+	settings, err := currentUserSettingsWithPatch(app, e.Auth, body.Settings, locale)
 	if err != nil {
 		return e.BadRequestError(serverText(locale, "notification.settingsInvalid"), err)
 	}
-	settings.Locale = string(locale)
-	message := buildTestNotification(time.Now(), settings)
-	if err := sendToChannel(app, body.Channel, settings, message); err != nil {
+	message := buildTestNotification(time.Now(), settings, locale)
+	if err := sendToChannel(app, body.Channel, settings, message, locale); err != nil {
 		return apiErrorJSON(e, http.StatusBadRequest, "NOTIFICATION_TEST_FAILED", serverFormat(locale, "notification.testFailed", map[string]interface{}{"error": err.Error()}), notificationChannelErrorDetails(err))
 	}
 	return apiEmptySuccessJSON(e, http.StatusOK)
@@ -78,6 +77,7 @@ func handleNotificationTest(app core.App, e *core.RequestEvent) error {
 
 // handleNotificationRun 为当前用户手动触发一次通知。
 // sent=false 是“没有应发送内容”的正常业务结果，不应当作为错误处理。
+// 手动正文跟随当前请求语言；后台 Cron 才读取账号内容语言。
 func handleNotificationRun(app core.App, e *core.RequestEvent) error {
 	startedAt := time.Now()
 	locale := requestLocale(e.Request)
@@ -86,11 +86,10 @@ func handleNotificationRun(app core.App, e *core.RequestEvent) error {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
 
-	settings, err := currentUserSettings(app, e.Auth, body.Settings)
+	settings, err := currentUserSettingsWithPatch(app, e.Auth, body.Settings, locale)
 	if err != nil {
 		return e.BadRequestError(serverText(locale, "notification.settingsInvalid"), err)
 	}
-	settings.Locale = string(locale)
 	if _, err := renewAutoSubscriptionsForUser(app, e.Auth.Id, settings.Timezone, time.Now()); err != nil {
 		return e.InternalServerError(serverText(locale, "notification.loadSubscriptionsFailed"), err)
 	}
@@ -98,7 +97,7 @@ func handleNotificationRun(app core.App, e *core.RequestEvent) error {
 	if err != nil {
 		return e.InternalServerError(serverText(locale, "notification.loadSubscriptionsFailed"), err)
 	}
-	message := buildDueNotification(time.Now(), settings, subscriptions, true)
+	message := buildDueNotification(time.Now(), settings, subscriptions, true, locale)
 	batchCount := 0
 	if message.HasPayload {
 		batchCount = 1
@@ -118,7 +117,7 @@ func handleNotificationRun(app core.App, e *core.RequestEvent) error {
 		return e.BadRequestError(serverText(locale, "notification.noEnabledChannels"), nil)
 	}
 
-	summary := sendToChannels(app, settings.EnabledChannels, settings, message)
+	summary := sendToChannels(app, settings.EnabledChannels, settings, message, locale)
 	return apiSuccessJSON(e, http.StatusOK, notificationRunSentResponse{Sent: true, Summary: summary})
 }
 
@@ -126,7 +125,7 @@ func handleNotificationRun(app core.App, e *core.RequestEvent) error {
 func handleNotificationOverview(app core.App, e *core.RequestEvent) error {
 	startedAt := time.Now()
 	locale := requestLocale(e.Request)
-	settings, err := currentUserSettings(app, e.Auth, nil)
+	settings, err := currentUserSettings(app, e.Auth)
 	if err != nil {
 		return e.BadRequestError(serverText(locale, "notification.settingsInvalid"), err)
 	}
@@ -143,8 +142,14 @@ func handleNotificationOverview(app core.App, e *core.RequestEvent) error {
 		"batches", len(overview.UpcomingBatches),
 		"duration", time.Since(startedAt),
 	)
-	latestJob, _ := latestNotificationJob(app, e.Auth.Id, "")
-	latestFailedJob, _ := latestNotificationJob(app, e.Auth.Id, notificationStatusFailed)
+	latestJob, err := latestNotificationHistoryJob(app, e.Auth.Id, "all")
+	if err != nil {
+		return e.InternalServerError(serverText(locale, "notification.loadHistoryFailed"), err)
+	}
+	latestFailedJob, err := latestNotificationHistoryJob(app, e.Auth.Id, notificationStatusFailed)
+	if err != nil {
+		return e.InternalServerError(serverText(locale, "notification.loadHistoryFailed"), err)
+	}
 
 	return apiSuccessJSON(e, http.StatusOK, notificationOverviewResponse{
 		Summary: notificationHistorySummaryResponse{
@@ -153,8 +158,8 @@ func handleNotificationOverview(app core.App, e *core.RequestEvent) error {
 			Blockers:         overview.Blockers,
 			EnabledChannels:  overview.EnabledChannels,
 			UpcomingDays:     overview.UpcomingDays,
-			LatestJob:        toHistoryJob(latestJob),
-			LatestFailedJob:  toHistoryJob(latestFailedJob),
+			LatestJob:        latestJob,
+			LatestFailedJob:  latestFailedJob,
 		},
 		Upcoming: overview.UpcomingBatches,
 	})
@@ -174,13 +179,7 @@ func handleNotificationHistory(app core.App, e *core.RequestEvent) error {
 	limit := clampInt(parseInt(query.Get("limit"), 20), 1, 50)
 	offset := maxInt(parseInt(query.Get("offset"), 0), 0)
 
-	filter := "user = {:user}"
-	params := dbx.Params{"user": e.Auth.Id}
-	if status != "all" {
-		filter += " && status = {:status}"
-		params["status"] = status
-	}
-	rows, err := app.FindRecordsByFilter("notification_jobs", filter, "-scheduledInstantUtc,-created", limit+1, offset, params)
+	rows, err := loadNotificationHistoryJobs(app, e.Auth.Id, status, limit+1, offset)
 	if err != nil {
 		return e.InternalServerError(serverText(locale, "notification.loadHistoryFailed"), err)
 	}
@@ -192,7 +191,7 @@ func handleNotificationHistory(app core.App, e *core.RequestEvent) error {
 		hasMore = true
 	}
 	return apiSuccessJSON(e, http.StatusOK, notificationHistoryPageResponse{
-		Jobs:    recordsToHistoryJobs(jobs),
+		Jobs:    jobs,
 		Status:  status,
 		Limit:   limit,
 		Offset:  offset,

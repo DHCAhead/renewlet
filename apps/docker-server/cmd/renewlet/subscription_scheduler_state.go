@@ -64,17 +64,27 @@ func refreshSubscriptionSchedulerStateWithOptions(app core.App, userID string, o
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	counts, err := readSubscriptionSchedulerAggregateInput(app, userID)
+	options.Now = now
+	var state subscriptionSchedulerState
+	// 缺失状态的并发读取不能各自创建一行；计数快照、提醒索引重建与状态写入必须一起提交或回滚。
+	// 只使用 txApp，既复用设置/导入的外层事务，也避免持有写事务后又从原 app 申请写连接。
+	err := app.RunInTransaction(func(txApp core.App) error {
+		counts, err := readSubscriptionSchedulerAggregateInput(txApp, userID)
+		if err != nil {
+			return err
+		}
+		settings := schedulerSettingsForUser(txApp, userID)
+		// 这个入口只用于缺失状态、设置变化和离线重建；普通订阅 mutation 与通知推进不得调用用户级 schedule rebuild。
+		if err := rebuildSubscriptionRepeatScheduleForUser(txApp, userID, settings, now); err != nil {
+			return err
+		}
+		state, err = writeSubscriptionSchedulerAggregate(txApp, userID, counts, options)
+		return err
+	})
 	if err != nil {
 		return subscriptionSchedulerState{}, err
 	}
-	settings := schedulerSettingsForUser(app, userID)
-	// 这个入口只用于缺失状态、设置变化和离线重建；普通订阅 mutation 与通知推进不得调用用户级 schedule rebuild。
-	if err := rebuildSubscriptionRepeatScheduleForUser(app, userID, settings, now); err != nil {
-		return subscriptionSchedulerState{}, err
-	}
-	options.Now = now
-	return writeSubscriptionSchedulerAggregate(app, userID, counts, options)
+	return state, nil
 }
 
 func readSubscriptionSchedulerAggregateInput(app core.App, userID string) (subscriptionSchedulerAggregateInput, error) {
@@ -289,10 +299,6 @@ func listAutoRenewDueUserIDs(app core.App, now time.Time, limit int) ([]string, 
 	return listSchedulerDueUserIDs(app, "s.autoRenewCount > 0 AND (s.nextAutoRenewCheckAtUTC = '' OR s.nextAutoRenewCheckAtUTC <= {:now})", now, limit, "s.nextAutoRenewCheckAtUTC ASC, s.user ASC", nil)
 }
 
-func listNotificationDueUserIDs(app core.App, now time.Time, limit int) ([]string, error) {
-	return listNotificationDueUserIDsExcluding(app, now, limit, nil)
-}
-
 func listNotificationDueUserIDsExcluding(app core.App, now time.Time, limit int, excludeUserIDs map[string]struct{}) ([]string, error) {
 	filter := "(s.nextDailyNotificationDueAtUTC = '' OR s.nextDailyNotificationDueAtUTC <= {:now} OR (s.repeatReminderCount > 0 AND (s.nextRepeatNotificationDueAtUTC = '' OR s.nextRepeatNotificationDueAtUTC <= {:now})))"
 	return listSchedulerDueUserIDs(app, filter, now, limit, "s.nextDailyNotificationDueAtUTC ASC, s.nextRepeatNotificationDueAtUTC ASC, s.user ASC", excludeUserIDs)
@@ -364,7 +370,7 @@ func schedulerSettingsForUser(app core.App, userID string) appSettings {
 	if err != nil {
 		return defaultAppSettings()
 	}
-	settings, err := currentUserSettings(app, user, nil)
+	settings, err := currentUserSettings(app, user)
 	if err != nil {
 		return defaultAppSettings()
 	}

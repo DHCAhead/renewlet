@@ -30,13 +30,16 @@ type customConfigResponse struct {
 	Config customConfigPayload `json:"config"`
 }
 
-type subscriptionsListResponse struct {
-	Subscriptions []map[string]interface{} `json:"subscriptions"`
-	NextCursor    *string                  `json:"nextCursor"`
-	Total         int64                    `json:"total,omitempty"`
+type publicSubscriptionCursorPayload struct {
+	CreatedAt string `json:"createdAt"`
+	ID        string `json:"id"`
 }
 
-type subscriptionCursorPayload struct {
+type privateSubscriptionCursorPayload struct {
+	Version   int    `json:"v"`
+	AsOf      string `json:"asOf"`
+	Pinned    int    `json:"pinned"`
+	Inactive  int    `json:"inactive"`
 	CreatedAt string `json:"createdAt"`
 	ID        string `json:"id"`
 }
@@ -122,7 +125,7 @@ func (f *optionalJSONField[T]) UnmarshalJSON(data []byte) error {
 
 func handleSettingsRead(app core.App, e *core.RequestEvent) error {
 	locale := requestLocale(e.Request)
-	_, settings, err := ensureSettingsRecord(app, e.Auth.Id, locale)
+	_, settings, err := ensureSettingsRecord(app, e.Auth.Id)
 	if err != nil {
 		return e.InternalServerError(serverText(locale, "common.internalError"), err)
 	}
@@ -137,12 +140,12 @@ func handleSettingsUpdate(app core.App, e *core.RequestEvent) error {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
 
-	record, current, err := settingsRecordOrDefault(app, e.Auth.Id, locale)
+	record, current, err := settingsRecordOrDefault(app, e.Auth.Id)
 	if err != nil {
 		return e.InternalServerError(serverText(locale, "common.internalError"), err)
 	}
 
-	next, err := mergeSettingsRequest(current, raw)
+	next, err := mergeSettingsRequest(current, raw, locale)
 	if err != nil {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
@@ -180,8 +183,8 @@ func handleSettingsUpdate(app core.App, e *core.RequestEvent) error {
 				return err
 			}
 		}
-		saved = settingsFromRecord(record)
-		return nil
+		saved, err = settingsFromRecord(record)
+		return err
 	})
 	if err != nil {
 		if validationErr != nil {
@@ -251,27 +254,6 @@ func handleCustomConfigUpdate(app core.App, e *core.RequestEvent) error {
 		return e.BadRequestError(validationErrorMessage(locale, "common.invalidRequestBody", err), err)
 	}
 	return apiSuccessJSON(e, http.StatusOK, customConfigResponse{Config: body.Config})
-}
-
-func handleSubscriptionsList(app core.App, e *core.RequestEvent) error {
-	locale := requestLocale(e.Request)
-	query, err := parseSubscriptionListQuery(e.Request.URL.Query())
-	if err != nil {
-		return e.BadRequestError(serverText(locale, "common.invalidRequestParameters"), err)
-	}
-	page, err := listSubscriptionRecordsForQuery(app, e.Auth.Id, query, todayDateOnly(time.Now(), currentUserSettingsTimezone(app, e.Auth)))
-	if err != nil {
-		return e.InternalServerError(serverText(locale, "common.internalError"), err)
-	}
-	subscriptions := make([]map[string]interface{}, 0, len(page.Rows))
-	for _, record := range page.Rows {
-		subscriptions = append(subscriptions, subscriptionAPIFromRecord(record))
-	}
-	return apiSuccessJSON(e, http.StatusOK, subscriptionsListResponse{
-		Subscriptions: subscriptions,
-		NextCursor:    page.NextCursor,
-		Total:         page.Total,
-	})
 }
 
 func handleSubscriptionCreate(app core.App, e *core.RequestEvent) error {
@@ -725,8 +707,8 @@ func parsePositiveQueryInt(value string, fallback int, min int, max int) (int, e
 	return parsed, nil
 }
 
-func parseSubscriptionCursorPayload(value string) (subscriptionCursorPayload, error) {
-	var cursor subscriptionCursorPayload
+func parsePublicSubscriptionCursorPayload(value string) (publicSubscriptionCursorPayload, error) {
+	var cursor publicSubscriptionCursorPayload
 	data, err := base64.StdEncoding.DecodeString(value)
 	if err != nil {
 		return cursor, err
@@ -740,14 +722,51 @@ func parseSubscriptionCursorPayload(value string) (subscriptionCursorPayload, er
 	return cursor, nil
 }
 
-func encodeSubscriptionCursor(record *core.Record) string {
-	cursor := subscriptionCursorPayload{
+func encodePublicSubscriptionCursor(record *core.Record) string {
+	cursor := publicSubscriptionCursorPayload{
 		// PocketBase filter 按 DefaultDateLayout 字符串比较 DateTime；cursor 不能使用对外 API 的 RFC3339 展示格式。
 		CreatedAt: record.GetDateTime("created").String(),
 		ID:        record.Id,
 	}
 	data, _ := json.Marshal(cursor)
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+func parsePrivateSubscriptionCursorPayload(value string) (privateSubscriptionCursorPayload, error) {
+	var wire struct {
+		Version   int    `json:"v"`
+		AsOf      string `json:"asOf"`
+		Pinned    *int   `json:"pinned"`
+		Inactive  *int   `json:"inactive"`
+		CreatedAt string `json:"createdAt"`
+		ID        string `json:"id"`
+	}
+	data, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return privateSubscriptionCursorPayload{}, err
+	}
+	if err := decodeStrictJSONBytesInto(data, &wire, defaultAppLocale, false); err != nil {
+		return privateSubscriptionCursorPayload{}, err
+	}
+	if wire.Version != 1 || !isValidDateOnly(wire.AsOf) || wire.Pinned == nil || wire.Inactive == nil ||
+		(*wire.Pinned != 0 && *wire.Pinned != 1) || (*wire.Inactive != 0 && *wire.Inactive != 1) ||
+		strings.TrimSpace(wire.CreatedAt) == "" || strings.TrimSpace(wire.ID) == "" {
+		return privateSubscriptionCursorPayload{}, errors.New("invalid private subscription cursor")
+	}
+	return privateSubscriptionCursorPayload{
+		Version: wire.Version, AsOf: wire.AsOf, Pinned: *wire.Pinned, Inactive: *wire.Inactive,
+		CreatedAt: wire.CreatedAt, ID: wire.ID,
+	}, nil
+}
+
+func encodePrivateSubscriptionCursor(row subscriptionListIndexRow, asOf string) string {
+	// 私有列表冻结 asOf 并携带全部排序键；Public API 继续使用独立的旧 cursor，避免机器调用契约被 UI 排序演进污染。
+	cursor := privateSubscriptionCursorPayload{
+		Version: 1, AsOf: asOf, Pinned: row.Pinned, Inactive: row.Inactive,
+		CreatedAt: row.CreatedAt, ID: row.SubscriptionID,
+	}
+	data, _ := json.Marshal(cursor)
+	return base64.RawURLEncoding.EncodeToString(data)
 }
 
 func uploadedAssetItemFromRecord(record *core.Record) uploadedAssetItem {
