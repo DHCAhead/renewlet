@@ -2,8 +2,8 @@ name: Auto Sync Renewlet Upstream
 
 on:
   schedule:
-    # 每小时第 17 分钟检查，避开整点。
-    - cron: "17 * * * *"
+    # 每天北京时间 09:17 检查（GitHub cron 使用 UTC），避开整点。
+    - cron: "17 1 * * *"
   workflow_dispatch:
   push:
     branches:
@@ -62,4 +62,3 @@ jobs:
               ref: branch,
             });
             core.info(`Dispatched Sync Renewlet Upstream for upstream ${upstreamSha}.`);
-
