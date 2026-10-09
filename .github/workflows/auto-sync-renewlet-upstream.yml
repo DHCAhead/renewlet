@@ -1,0 +1,65 @@
+name: Auto Sync Renewlet Upstream
+
+on:
+  schedule:
+    # 每小时第 17 分钟检查，避开整点。
+    - cron: "17 * * * *"
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/auto-sync-renewlet-upstream.yml
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: auto-sync-renewlet-upstream
+  cancel-in-progress: false
+
+jobs:
+  check-and-dispatch:
+    if: ${{ github.repository == 'DHCAhead/renewlet' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check upstream and run the official sync action
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const branch = context.payload.repository?.default_branch || "main";
+
+            const { data: upstream } = await github.rest.git.getRef({
+              owner: "zhiyingzzhou",
+              repo: "renewlet",
+              ref: "heads/main",
+            });
+            const upstreamSha = upstream.object.sha;
+
+            // 官方同步提交记录了上游 SHA；失败的同步不会生成提交，下次检查会重试。
+            const { data: commits } = await github.rest.repos.listCommits({
+              owner,
+              repo,
+              sha: branch,
+              per_page: 100,
+            });
+            const lastSync = commits
+              .map(commit => /^chore: sync Renewlet upstream ([0-9a-f]{12,40})$/m.exec(commit.commit.message))
+              .find(Boolean);
+
+            if (lastSync && upstreamSha.startsWith(lastSync[1])) {
+              core.info(`Upstream ${upstreamSha} is already synced. Nothing to do.`);
+              return;
+            }
+
+            await github.rest.actions.createWorkflowDispatch({
+              owner,
+              repo,
+              workflow_id: "sync-renewlet-upstream.yml",
+              ref: branch,
+            });
+            core.info(`Dispatched Sync Renewlet Upstream for upstream ${upstreamSha}.`);
+
